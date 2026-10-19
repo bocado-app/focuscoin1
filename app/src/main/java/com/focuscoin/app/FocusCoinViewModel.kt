@@ -18,6 +18,10 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 
 data class InstalledApp(
     val packageName: String,
@@ -29,11 +33,24 @@ data class InstalledApp(
 data class MainUiState(
     val preferences: PreferenceState = PreferenceState(),
     val appLocks: List<AppLockEntity> = emptyList(),
+    val studyBonusApps: List<StudyBonusAppEntity> = emptyList(),
+    val studyPlans: List<StudyPlanEntity> = emptyList(),
+    val subjectPlans: List<SubjectPlanEntity> = emptyList(),
+    val academicGrades: List<AcademicGradeEntity> = emptyList(),
+    val universityBenchmarks: List<UniversityBenchmarkEntity> = emptyList(),
+    val dailyLearningMemos: List<DailyLearningMemoEntity> = emptyList(),
     val sessions: List<StudySessionEntity> = emptyList(),
     val transactions: List<CoinTransactionEntity> = emptyList(),
     val installedApps: List<InstalledApp> = emptyList(),
     val appListError: Boolean = false,
     val isReady: Boolean = false
+)
+
+private data class CombinedScreenData(
+    val plans: Triple<Pair<List<AppLockEntity>, List<StudyBonusAppEntity>>, List<StudyPlanEntity>, List<SubjectPlanEntity>>,
+    val memos: List<DailyLearningMemoEntity>,
+    val grades: List<AcademicGradeEntity>,
+    val universities: List<UniversityBenchmarkEntity>
 )
 
 class FocusCoinViewModel(
@@ -42,15 +59,41 @@ class FocusCoinViewModel(
 ) : AndroidViewModel(application) {
     private val installedApps = MutableStateFlow<List<InstalledApp>>(emptyList())
     private val appListError = MutableStateFlow(false)
+    private val studyUsageMutex = Mutex()
+    private var studyUsageAccessAvailable = false
+
+    private val appConfigurations = combine(repository.appLocks, repository.studyBonusApps) { locks, bonusApps ->
+        locks to bonusApps
+    }
+    private val plans = combine(appConfigurations, repository.studyPlans, repository.subjectPlans) { apps, plans, subjects ->
+        Triple(apps, plans, subjects)
+    }
+    private val academicData = combine(repository.academicGrades, repository.universityBenchmarks) { grades, universities -> grades to universities }
+    private val screenData = combine(plans, repository.dailyLearningMemos, academicData) { planData, memos, academic ->
+        CombinedScreenData(planData, memos, academic.first, academic.second)
+    }
 
     private val baseState = combine(
         repository.preferenceFlow,
-        repository.appLocks,
+        screenData,
         repository.sessions,
         repository.transactions,
         installedApps
-    ) { preferences, locks, sessions, transactions, apps ->
-        MainUiState(preferences, locks, sessions, transactions, apps, isReady = true)
+    ) { preferences, appConfigs, sessions, transactions, apps ->
+        MainUiState(
+            preferences = preferences,
+            appLocks = appConfigs.plans.first.first,
+            studyBonusApps = appConfigs.plans.first.second,
+            studyPlans = appConfigs.plans.second,
+            subjectPlans = appConfigs.plans.third,
+            academicGrades = appConfigs.grades,
+            universityBenchmarks = appConfigs.universities,
+            dailyLearningMemos = appConfigs.memos,
+            sessions = sessions,
+            transactions = transactions,
+            installedApps = apps,
+            isReady = true
+        )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), MainUiState())
 
     val uiState: StateFlow<MainUiState> = combine(baseState, appListError) { state, error ->
@@ -60,12 +103,56 @@ class FocusCoinViewModel(
     init {
         viewModelScope.launch(Dispatchers.IO) { loadInstalledApps() }
         viewModelScope.launch { repository.reconcileBalance() }
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.IO) {
+            baselineStudyUsage()
+            lastStudyUsageSampleAt = System.currentTimeMillis()
             while (true) {
                 kotlinx.coroutines.delay(1_000)
+                val timer = repository.currentPreferences().timer
+                val dueToFinish = timer.status == "RUNNING" && timer.plannedMinutes > 0 &&
+                    timer.elapsedAt(System.currentTimeMillis()) >= timer.plannedMinutes * 60_000L
+                if (System.currentTimeMillis() - lastStudyUsageSampleAt >= 10_000L || dueToFinish) {
+                    val timerRunning = timer.status == "RUNNING"
+                    collectStudyUsage(timerRunning)
+                    lastStudyUsageSampleAt = System.currentTimeMillis()
+                }
                 repository.refreshTimer()?.let { AppNotifications.show(getApplication(), it) }
             }
         }
+    }
+
+    @Volatile private var lastStudyUsageSampleAt: Long = 0L
+
+    private suspend fun baselineStudyUsage() = studyUsageMutex.withLock {
+        val selections = repository.studyBonusApps.first().filter { it.isEnabled }
+        if (selections.isEmpty()) return@withLock
+        val current = withContext(Dispatchers.IO) {
+            UsageStatsAccess.studyAppForegroundMillis(getApplication(), selections.map { it.packageName }.toSet())
+        }
+        if (current == null) {
+            studyUsageAccessAvailable = false
+            return@withLock
+        }
+        repository.baselineStudyBonusUsage(current)
+        studyUsageAccessAvailable = true
+    }
+
+    private suspend fun collectStudyUsage(timerRunning: Boolean) = studyUsageMutex.withLock {
+        val selections = repository.studyBonusApps.first().filter { it.isEnabled }
+        if (selections.isEmpty()) return@withLock
+        val current = withContext(Dispatchers.IO) {
+            UsageStatsAccess.studyAppForegroundMillis(getApplication(), selections.map { it.packageName }.toSet())
+        }
+        if (current == null) {
+            studyUsageAccessAvailable = false
+            return@withLock
+        }
+        if (!studyUsageAccessAvailable) {
+            repository.baselineStudyBonusUsage(current)
+            studyUsageAccessAvailable = true
+            return@withLock
+        }
+        repository.collectStudyBonusUsage(current, timerRunning)
     }
 
     private fun loadInstalledApps() {
@@ -101,14 +188,25 @@ class FocusCoinViewModel(
 
     fun retryLoadApps() = viewModelScope.launch(Dispatchers.IO) { loadInstalledApps() }
     fun finishOnboarding() = viewModelScope.launch { repository.finishOnboarding() }
-    fun startTimer(minutes: Int) = viewModelScope.launch { repository.startTimer(minutes) }
-    fun pauseTimer() = viewModelScope.launch { repository.pauseTimer() }
-    fun resumeTimer() = viewModelScope.launch { repository.resumeTimer() }
+    fun startTimer(minutes: Int, subject: SubjectPlanEntity? = null) = viewModelScope.launch {
+        baselineStudyUsage()
+        repository.startTimer(minutes, subject?.id, subject?.subjectName.orEmpty())
+    }
+    fun pauseTimer() = viewModelScope.launch {
+        collectStudyUsage(timerRunning = true)
+        repository.pauseTimer()
+    }
+    fun resumeTimer() = viewModelScope.launch {
+        baselineStudyUsage()
+        repository.resumeTimer()
+    }
     fun finishTimer() = viewModelScope.launch {
+        collectStudyUsage(repository.currentPreferences().timer.status == "RUNNING")
         repository.finishTimer()?.let { AppNotifications.show(getApplication(), it) }
     }
     fun setCoinPerMinute(value: Int) = viewModelScope.launch { repository.setCoinPerMinute(value) }
     fun setCompletionBonus(value: Int) = viewModelScope.launch { repository.setCompletionBonus(value) }
+    fun setStudyAppDailyBonusCap(value: Int) = viewModelScope.launch { repository.setStudyAppDailyBonusCap(value) }
     fun setEmergencyEnabled(value: Boolean) = viewModelScope.launch { repository.setEmergencyEnabled(value) }
     fun setEmergencyMinutes(value: Int) = viewModelScope.launch { repository.setEmergencyMinutes(value) }
     fun resetAll() = viewModelScope.launch { repository.resetAll() }
@@ -116,6 +214,25 @@ class FocusCoinViewModel(
     fun setAppSelected(app: InstalledApp, selected: Boolean) = viewModelScope.launch {
         repository.upsertAppLock(app.packageName, app.appName, selected)
     }
+
+    fun setStudyBonusSelected(app: InstalledApp, selected: Boolean) = viewModelScope.launch(Dispatchers.IO) {
+        val usage = if (selected) UsageStatsAccess.studyAppForegroundMillis(getApplication(), setOf(app.packageName))?.get(app.packageName) else null
+        repository.setStudyBonusApp(app.packageName, app.appName, selected, usage)
+    }
+
+    fun saveStudyPlan(plan: StudyPlanEntity) = viewModelScope.launch { repository.saveStudyPlan(plan) }
+    fun deleteStudyPlan(id: String) = viewModelScope.launch { repository.deleteStudyPlan(id) }
+    fun saveSubjectPlan(plan: SubjectPlanEntity) = viewModelScope.launch { repository.saveSubjectPlan(plan) }
+    fun deleteSubjectPlan(id: String) = viewModelScope.launch { repository.deleteSubjectPlan(id) }
+    fun saveAcademicGrade(grade: AcademicGradeEntity) = viewModelScope.launch { repository.saveAcademicGrade(grade) }
+    fun deleteAcademicGrade(id: String) = viewModelScope.launch { repository.deleteAcademicGrade(id) }
+    fun saveUniversityBenchmark(benchmark: UniversityBenchmarkEntity) = viewModelScope.launch { repository.saveUniversityBenchmark(benchmark) }
+    fun deleteUniversityBenchmark(id: String) = viewModelScope.launch { repository.deleteUniversityBenchmark(id) }
+    fun saveDailyLearningMemo(date: String, content: String) = viewModelScope.launch { repository.saveDailyLearningMemo(date, content) }
+    fun startPlannedBreak(minutes: Int, onResult: (Boolean) -> Unit = {}) = viewModelScope.launch {
+        onResult(repository.startPlannedBreak(minutes))
+    }
+    fun finishPlannedBreak() = viewModelScope.launch { repository.finishPlannedBreak() }
 
     fun updatePricing(packageName: String, duration: Int, cost: Int) = viewModelScope.launch {
         repository.updateUnlockPricing(packageName, duration, cost)
@@ -136,3 +253,4 @@ class FocusCoinViewModelFactory(
         error("Unknown ViewModel class: ${modelClass.name}")
     }
 }
+

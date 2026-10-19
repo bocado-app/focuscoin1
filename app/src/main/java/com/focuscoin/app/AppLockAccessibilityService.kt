@@ -1,6 +1,8 @@
 package com.focuscoin.app
 
 import android.accessibilityservice.AccessibilityService
+import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.res.ColorStateList
 import android.graphics.Color
 import android.graphics.PixelFormat
@@ -18,6 +20,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -26,7 +30,11 @@ import kotlinx.coroutines.withContext
 class AppLockAccessibilityService : AccessibilityService() {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val recentlyHandled = mutableMapOf<String, Long>()
-    @Volatile private var selectedPackages: Set<String> = emptySet()
+    @Volatile private var lockedPackages: Set<String> = emptySet()
+    @Volatile private var studyPlans: List<StudyPlanEntity> = emptyList()
+    @Volatile private var plannedBreakUntil: Long = 0L
+    @Volatile private var currentForegroundPackage: String? = null
+    @Volatile private var plannerOverlay = false
     private var overlay: View? = null
     private var overlayPackage: String? = null
     private lateinit var windowManager: WindowManager
@@ -36,17 +44,41 @@ class AppLockAccessibilityService : AccessibilityService() {
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
         val repository = (application as FocusCoinApplication).repository
         serviceScope.launch {
-            repository.appLocks.collect { configs ->
-                val packages = configs.filter { it.isLocked }.map { it.packageName }.toSet()
-                selectedPackages = packages
+            combine(repository.appLocks, repository.studyPlans) { configs, plans ->
+                configs.filter { it.isLocked }.map { it.packageName }.toSet() to plans
+            }.collect { (packages, plans) ->
+                lockedPackages = packages
+                studyPlans = plans
                 withContext(Dispatchers.Main) {
                     runCatching {
+                        val plannerEnabled = plans.any { it.isEnabled }
                         serviceInfo = serviceInfo.apply {
-                            packageNames = packages.toTypedArray()
-                            eventTypes = if (packages.isEmpty()) 0 else AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
+                            packageNames = if (plannerEnabled) null else packages.toTypedArray()
+                            eventTypes = if (plannerEnabled || packages.isNotEmpty()) AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED else 0
                         }
                     }
-                    if (overlayPackage != null && overlayPackage !in packages) dismissOverlay()
+                }
+                currentForegroundPackage?.let { enforcePackage(it, System.currentTimeMillis()) }
+            }
+        }
+        serviceScope.launch {
+            repository.preferenceFlow.collect { preferences ->
+                plannedBreakUntil = preferences.breakUntil
+                currentForegroundPackage?.let { enforcePackage(it, System.currentTimeMillis()) }
+            }
+        }
+        serviceScope.launch {
+            var lastActivePlanId: String? = null
+            var wasBreakActive = false
+            while (true) {
+                delay(1_000)
+                val now = System.currentTimeMillis()
+                val activePlanId = studyPlans.firstOrNull { it.isActiveAt(now) }?.id
+                val breakActive = plannedBreakUntil > now
+                if (activePlanId != lastActivePlanId || breakActive != wasBreakActive) {
+                    lastActivePlanId = activePlanId
+                    wasBreakActive = breakActive
+                    currentForegroundPackage?.let { enforcePackage(it, now) }
                 }
             }
         }
@@ -55,26 +87,125 @@ class AppLockAccessibilityService : AccessibilityService() {
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event?.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return
         val packageName = event.packageName?.toString() ?: return
-        if (packageName !in selectedPackages) return
+        if (packageName == this.packageName) {
+            currentForegroundPackage = packageName
+            return
+        }
+        if (packageName !in lockedPackages && studyPlans.none { it.isEnabled }) return
+        currentForegroundPackage = packageName
+        serviceScope.launch { enforcePackage(packageName, System.currentTimeMillis()) }
+    }
 
-        val now = System.currentTimeMillis()
+    private suspend fun enforcePackage(packageName: String, now: Long) {
+        if (plannedBreakUntil > now) {
+            if (overlay != null) withContext(Dispatchers.Main) { dismissOverlay() }
+            return
+        }
+        val activePlan = studyPlans.firstOrNull { it.isActiveAt(now) }
+        if (activePlan != null) {
+            if (isEssentialSystemApp(packageName) || packageName in activePlan.allowedPackageSet()) {
+                if (plannerOverlay) withContext(Dispatchers.Main) { dismissOverlay() }
+                // A planner's explicit allow list takes precedence over ordinary app locks.
+                if (!isEssentialSystemApp(packageName)) return
+            } else {
+                val appName = runCatching {
+                    @Suppress("DEPRECATION")
+                    packageManager.getApplicationLabel(packageManager.getApplicationInfo(packageName, 0)).toString()
+                }.getOrDefault(packageName)
+                withContext(Dispatchers.Main) { showPlannerOverlay(packageName, appName, activePlan) }
+                return
+            }
+        } else if (plannerOverlay) {
+            withContext(Dispatchers.Main) { dismissOverlay() }
+        }
+
+        if (packageName !in lockedPackages) return
         synchronized(recentlyHandled) {
             recentlyHandled.entries.removeAll { now - it.value > 15_000L }
             if (overlayPackage == packageName || now - (recentlyHandled[packageName] ?: 0L) < 3_000L) return
             recentlyHandled[packageName] = now
         }
+        val repository = (application as FocusCoinApplication).repository
+        val config = repository.getAppLock(packageName) ?: return
+        if (!config.isLocked || config.unlockedUntil > now) return
+        val preferences = repository.currentPreferences()
+        withContext(Dispatchers.Main) { showOverlay(config, preferences) }
+    }
 
-        serviceScope.launch {
-            val repository = (application as FocusCoinApplication).repository
-            val config = repository.getAppLock(packageName) ?: return@launch
-            if (!config.isLocked || config.unlockedUntil > now) return@launch
-            val preferences = repository.currentPreferences()
-            withContext(Dispatchers.Main) { showOverlay(config, preferences) }
+    private fun isEssentialSystemApp(packageName: String): Boolean {
+        if (packageName == this.packageName || packageName in setOf(
+                "com.android.systemui",
+                "com.android.settings",
+                "com.android.permissioncontroller",
+                "com.google.android.permissioncontroller"
+            )) return true
+        val homeIntent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME)
+        val homePackage = runCatching {
+            if (android.os.Build.VERSION.SDK_INT >= 33) {
+                packageManager.resolveActivity(homeIntent, PackageManager.ResolveInfoFlags.of(PackageManager.MATCH_DEFAULT_ONLY.toLong()))?.activityInfo?.packageName
+            } else {
+                @Suppress("DEPRECATION")
+                packageManager.resolveActivity(homeIntent, PackageManager.MATCH_DEFAULT_ONLY)?.activityInfo?.packageName
+            }
+        }.getOrNull()
+        if (packageName == homePackage) return true
+        return runCatching {
+            @Suppress("DEPRECATION")
+            val info = packageManager.getApplicationInfo(packageName, 0)
+            info.flags and (android.content.pm.ApplicationInfo.FLAG_SYSTEM or android.content.pm.ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) != 0
+        }.getOrDefault(true)
+    }
+
+    private fun showPlannerOverlay(packageName: String, appName: String, plan: StudyPlanEntity) {
+        if (overlayPackage == packageName && plannerOverlay) return
+        dismissOverlay()
+        plannerOverlay = true
+        overlayPackage = packageName
+        val density = resources.displayMetrics.density
+        fun px(dp: Int) = (dp * density).toInt()
+        val root = FrameLayout(this).apply {
+            setBackgroundColor(Color.argb(248, 18, 18, 28))
+            isClickable = true
+            isFocusable = true
         }
+        val card = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
+            setPadding(px(24), px(26), px(24), px(22))
+            background = GradientDrawable().apply {
+                setColor(Color.rgb(38, 37, 53))
+                cornerRadius = px(28).toFloat()
+            }
+        }
+        root.addView(card, FrameLayout.LayoutParams(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.WRAP_CONTENT, Gravity.CENTER).apply {
+            leftMargin = px(24); rightMargin = px(24)
+        })
+        card.addView(label("FocusCoin 플래너", 13, 0xFFBDB5FF.toInt(), true, Gravity.CENTER), matchWidth())
+        addSpace(card, px(10))
+        card.addView(label("플래너 집중 시간입니다.", 23, Color.WHITE, true, Gravity.CENTER), matchWidth())
+        addSpace(card, px(12))
+        card.addView(label("$appName은(는) ‘${plan.title}’ 일정에서 허용하지 않은 앱이에요.\n허용한 앱과 시스템 앱은 사용할 수 있습니다.", 15, 0xFFE1E0EA.toInt(), false, Gravity.CENTER), matchWidth())
+        addSpace(card, px(10))
+        card.addView(actionButton("앱 닫기", 0xFF454454.toInt()) {
+            dismissOverlay()
+            performGlobalAction(GLOBAL_ACTION_HOME)
+        }, matchWidth())
+        val params = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.MATCH_PARENT,
+            WindowManager.LayoutParams.MATCH_PARENT,
+            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+            PixelFormat.TRANSLUCENT
+        ).apply { gravity = Gravity.CENTER }
+        runCatching {
+            windowManager.addView(root, params)
+            overlay = root
+        }.onFailure { dismissOverlay() }
     }
 
     private fun showOverlay(config: AppLockEntity, preferences: PreferenceState, confirming: Boolean = false, message: String = "") {
         dismissOverlay()
+        plannerOverlay = false
         overlayPackage = config.packageName
         val density = resources.displayMetrics.density
         fun px(dp: Int) = (dp * density).toInt()
@@ -203,6 +334,7 @@ class AppLockAccessibilityService : AccessibilityService() {
         overlay?.let { view -> runCatching { windowManager.removeView(view) } }
         overlay = null
         overlayPackage = null
+        plannerOverlay = false
     }
 
     private fun label(text: String, size: Int, color: Int, bold: Boolean, gravity: Int): TextView = TextView(this).apply {
@@ -233,3 +365,4 @@ class AppLockAccessibilityService : AccessibilityService() {
         super.onDestroy()
     }
 }
+

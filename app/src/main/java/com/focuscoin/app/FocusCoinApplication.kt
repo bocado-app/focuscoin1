@@ -14,8 +14,9 @@ class FocusCoinApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         val database = Room.databaseBuilder(this, FocusCoinDatabase::class.java, "focuscoin.db")
-            .fallbackToDestructiveMigration()
+            .addMigrations(FocusCoinDatabase.MIGRATION_1_2, FocusCoinDatabase.MIGRATION_2_3, FocusCoinDatabase.MIGRATION_3_4, FocusCoinDatabase.MIGRATION_4_5, FocusCoinDatabase.MIGRATION_5_6)
             .build()
         repository = FocusCoinRepository(database, focusCoinDataStore)
     }
 }
+

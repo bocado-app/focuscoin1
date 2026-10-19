@@ -53,7 +53,9 @@ class MainActivity : ComponentActivity() {
                 var permissionRefresh by remember { mutableIntStateOf(0) }
                 DisposableEffect(lifecycle) {
                     val observer = LifecycleEventObserver { _, event ->
-                        if (event == Lifecycle.Event.ON_RESUME) permissionRefresh++
+                        if (event == Lifecycle.Event.ON_RESUME) {
+                            permissionRefresh++
+                        }
                     }
                     lifecycle.addObserver(observer)
                     onDispose { lifecycle.removeObserver(observer) }
@@ -74,3 +76,4 @@ class MainActivity : ComponentActivity() {
         }
     }
 }
+
