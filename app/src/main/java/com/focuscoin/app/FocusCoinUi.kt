@@ -1256,7 +1256,7 @@ private fun ReportScreen(state: MainUiState, permissionRefresh: Int) {
                     val bonusCoins = studyBonusTransactions.values.flatten().sumOf { it.amount }
                     if (bonusCoins > 0) {
                         Divider()
-                        Text("공부 앱 보너스 +$bonusCoins코인", fontWeight = FontWeight.SemiBold, color = CoinGold)
+                        Text("공부 앱 보너스 +${bonusCoins}코인", fontWeight = FontWeight.SemiBold, color = CoinGold)
                         studyBonusTransactions.forEach { (packageName, entries) ->
                             val appName = packageName?.let { state.installedApps.firstOrNull { app -> app.packageName == it }?.appName } ?: "선택 앱"
                             Text("$appName · ${entries.sumOf { it.durationMinutes }}분 사용 · +${entries.sumOf { it.amount }}코인", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)

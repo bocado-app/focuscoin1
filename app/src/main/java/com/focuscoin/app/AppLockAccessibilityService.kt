@@ -184,7 +184,7 @@ class AppLockAccessibilityService : AccessibilityService() {
         addSpace(card, px(10))
         card.addView(label("플래너 집중 시간입니다.", 23, Color.WHITE, true, Gravity.CENTER), matchWidth())
         addSpace(card, px(12))
-        card.addView(label("$appName은(는) ‘${plan.title}’ 일정에서 허용하지 않은 앱이에요.\n허용한 앱과 시스템 앱은 사용할 수 있습니다.", 15, 0xFFE1E0EA.toInt(), false, Gravity.CENTER), matchWidth())
+        card.addView(label("${appName}은(는) ‘${plan.title}’ 일정에서 허용하지 않은 앱이에요.\n허용한 앱과 시스템 앱은 사용할 수 있습니다.", 15, 0xFFE1E0EA.toInt(), false, Gravity.CENTER), matchWidth())
         addSpace(card, px(10))
         card.addView(actionButton("앱 닫기", 0xFF454454.toInt()) {
             dismissOverlay()
