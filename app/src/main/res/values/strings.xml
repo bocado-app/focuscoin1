@@ -1,4 +1,5 @@
 <resources>
     <string name="app_name">FocusCoin</string>
-    <string name="accessibility_service_description">사용자가 잠금 대상으로 선택한 앱이 열렸는지만 확인해 FocusCoin 안내를 표시합니다. 화면 내용이나 입력은 읽지 않습니다.</string>
+    <string name="accessibility_service_description">선택한 잠금 앱과 활성 플래너 일정의 허용 목록을 적용하기 위해 열린 앱의 패키지명만 확인합니다. 화면 내용이나 입력은 읽지 않습니다.</string>
 </resources>
+

@@ -16,6 +16,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
+import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 import java.util.UUID
@@ -27,7 +28,9 @@ data class TimerSnapshot(
     val startedAt: Long = 0L,
     val plannedMinutes: Int = 0,
     val elapsedBeforeResume: Long = 0L,
-    val resumedAt: Long = 0L
+    val resumedAt: Long = 0L,
+    val subjectPlanId: String? = null,
+    val subjectName: String = ""
 ) {
     fun elapsedAt(now: Long): Long = elapsedBeforeResume +
         if (status == "RUNNING" && resumedAt > 0L) (now - resumedAt).coerceAtLeast(0L) else 0L
@@ -37,10 +40,14 @@ data class PreferenceState(
     val balance: Int = 0,
     val coinPerMinute: Int = 1,
     val completionBonus: Int = 10,
+    val studyAppDailyBonusCapCoins: Int = 60,
     val emergencyUnlockEnabled: Boolean = true,
     val emergencyUnlockMinutes: Int = 10,
     val lastEmergencyUnlockDate: String = "",
     val onboardingComplete: Boolean = false,
+    val breakBalanceMinutes: Int = 0,
+    val breakStudyRemainderMinutes: Int = 0,
+    val breakUntil: Long = 0L,
     val timer: TimerSnapshot = TimerSnapshot()
 )
 
@@ -56,6 +63,12 @@ class FocusCoinRepository(
     private val store: DataStore<Preferences>
 ) {
     private val lockDao = database.appLockDao()
+    private val studyBonusAppDao = database.studyBonusAppDao()
+    private val studyPlanDao = database.studyPlanDao()
+    private val subjectPlanDao = database.subjectPlanDao()
+    private val academicGradeDao = database.academicGradeDao()
+    private val universityBenchmarkDao = database.universityBenchmarkDao()
+    private val dailyLearningMemoDao = database.dailyLearningMemoDao()
     private val sessionDao = database.studySessionDao()
     private val transactionDao = database.coinTransactionDao()
     private val mutex = Mutex()
@@ -64,16 +77,22 @@ class FocusCoinRepository(
         val balance = intPreferencesKey("coin_balance")
         val rate = intPreferencesKey("coin_per_minute")
         val bonus = intPreferencesKey("completion_bonus")
+        val studyAppDailyBonusCap = intPreferencesKey("study_app_daily_bonus_cap")
         val emergencyEnabled = booleanPreferencesKey("emergency_enabled")
         val emergencyMinutes = intPreferencesKey("emergency_minutes")
         val lastEmergencyDate = stringPreferencesKey("last_emergency_date")
         val onboarding = booleanPreferencesKey("onboarding_complete")
+        val breakBalance = intPreferencesKey("planned_break_balance_minutes")
+        val breakStudyRemainder = intPreferencesKey("planned_break_study_remainder_minutes")
+        val breakUntil = longPreferencesKey("planned_break_until")
         val timerId = stringPreferencesKey("timer_session_id")
         val timerStatus = stringPreferencesKey("timer_status")
         val timerStartedAt = longPreferencesKey("timer_started_at")
         val timerPlanned = intPreferencesKey("timer_planned_minutes")
         val timerElapsed = longPreferencesKey("timer_elapsed_before_resume")
         val timerResumedAt = longPreferencesKey("timer_resumed_at")
+        val timerSubjectPlanId = stringPreferencesKey("timer_subject_plan_id")
+        val timerSubjectName = stringPreferencesKey("timer_subject_name")
     }
 
     val preferenceFlow: Flow<PreferenceState> = store.data.map { p ->
@@ -81,22 +100,34 @@ class FocusCoinRepository(
             balance = (p[Keys.balance] ?: 0).coerceAtLeast(0),
             coinPerMinute = (p[Keys.rate] ?: 1).coerceIn(1, 100),
             completionBonus = (p[Keys.bonus] ?: 10).coerceIn(0, 1000),
+            studyAppDailyBonusCapCoins = (p[Keys.studyAppDailyBonusCap] ?: 60).coerceIn(0, 10_000),
             emergencyUnlockEnabled = p[Keys.emergencyEnabled] ?: true,
             emergencyUnlockMinutes = (p[Keys.emergencyMinutes] ?: 10).coerceIn(1, 60),
             lastEmergencyUnlockDate = p[Keys.lastEmergencyDate] ?: "",
             onboardingComplete = p[Keys.onboarding] ?: false,
+            breakBalanceMinutes = (p[Keys.breakBalance] ?: 0).coerceAtLeast(0),
+            breakStudyRemainderMinutes = (p[Keys.breakStudyRemainder] ?: 0).coerceIn(0, 24),
+            breakUntil = p[Keys.breakUntil] ?: 0L,
             timer = TimerSnapshot(
                 sessionId = p[Keys.timerId] ?: "",
                 status = p[Keys.timerStatus] ?: "IDLE",
                 startedAt = p[Keys.timerStartedAt] ?: 0L,
                 plannedMinutes = p[Keys.timerPlanned] ?: 0,
                 elapsedBeforeResume = p[Keys.timerElapsed] ?: 0L,
-                resumedAt = p[Keys.timerResumedAt] ?: 0L
+                resumedAt = p[Keys.timerResumedAt] ?: 0L,
+                subjectPlanId = p[Keys.timerSubjectPlanId]?.takeIf { it.isNotBlank() },
+                subjectName = p[Keys.timerSubjectName] ?: ""
             )
         )
     }
 
     val appLocks: Flow<List<AppLockEntity>> = lockDao.observeAll()
+    val studyBonusApps: Flow<List<StudyBonusAppEntity>> = studyBonusAppDao.observeAll()
+    val studyPlans: Flow<List<StudyPlanEntity>> = studyPlanDao.observeAll()
+    val subjectPlans: Flow<List<SubjectPlanEntity>> = subjectPlanDao.observeAll()
+    val academicGrades: Flow<List<AcademicGradeEntity>> = academicGradeDao.observeAll()
+    val universityBenchmarks: Flow<List<UniversityBenchmarkEntity>> = universityBenchmarkDao.observeAll()
+    val dailyLearningMemos: Flow<List<DailyLearningMemoEntity>> = dailyLearningMemoDao.observeAll()
     val sessions: Flow<List<StudySessionEntity>> = sessionDao.observeAll()
     val transactions: Flow<List<CoinTransactionEntity>> = transactionDao.observeAll()
 
@@ -108,6 +139,9 @@ class FocusCoinRepository(
     suspend fun finishOnboarding() { store.edit { it[Keys.onboarding] = true } }
     suspend fun setCoinPerMinute(value: Int) { store.edit { it[Keys.rate] = value.coerceIn(1, 100) } }
     suspend fun setCompletionBonus(value: Int) { store.edit { it[Keys.bonus] = value.coerceIn(0, 1000) } }
+    suspend fun setStudyAppDailyBonusCap(value: Int) {
+        store.edit { it[Keys.studyAppDailyBonusCap] = value.coerceIn(0, 10_000) }
+    }
     suspend fun setEmergencyEnabled(value: Boolean) { store.edit { it[Keys.emergencyEnabled] = value } }
     suspend fun setEmergencyMinutes(value: Int) { store.edit { it[Keys.emergencyMinutes] = value.coerceIn(1, 60) } }
 
@@ -141,7 +175,168 @@ class FocusCoinRepository(
         lockDao.upsert(old.copy(unlockDurationMinutes = duration.coerceIn(1, 240), unlockCostCoins = cost.coerceIn(1, 10000)))
     }
 
-    suspend fun startTimer(minutes: Int) = mutex.withLock {
+    suspend fun setStudyBonusApp(
+        packageName: String,
+        appName: String,
+        enabled: Boolean,
+        currentUsageMillis: Long?
+    ) = mutex.withLock {
+        if (!enabled) {
+            studyBonusAppDao.delete(packageName)
+            return@withLock
+        }
+        val old = studyBonusAppDao.get(packageName)
+        studyBonusAppDao.upsert(
+            StudyBonusAppEntity(
+                packageName = packageName,
+                appName = appName,
+                isEnabled = true,
+                usageDay = todayKey(),
+                lastUsageMillis = currentUsageMillis ?: 0L,
+                remainderMillis = old?.remainderMillis ?: 0L,
+                rewardedMinutes = old?.rewardedMinutes ?: 0L
+            )
+        )
+    }
+
+    suspend fun saveStudyPlan(plan: StudyPlanEntity) = studyPlanDao.upsert(plan.copy(
+        title = plan.title.trim().take(60),
+        weekdaysMask = plan.weekdaysMask and 0x7F,
+        startMinute = plan.startMinute.coerceIn(0, 1439),
+        endMinute = plan.endMinute.coerceIn(1, 1440),
+        allowedPackages = plan.allowedPackageSet().joinToString(",")
+    ))
+
+    suspend fun deleteStudyPlan(id: String) = studyPlanDao.delete(id)
+
+    suspend fun saveSubjectPlan(plan: SubjectPlanEntity) = subjectPlanDao.upsert(plan.copy(
+        subjectName = plan.subjectName.trim().take(40),
+        dailyGoalMinutes = plan.dailyGoalMinutes.coerceIn(5, 1440)
+    ))
+
+    suspend fun deleteSubjectPlan(id: String) = subjectPlanDao.delete(id)
+
+    suspend fun saveAcademicGrade(grade: AcademicGradeEntity) {
+        academicGradeDao.upsert(grade.copy(
+            academicYear = grade.academicYear.coerceIn(2000, 2100),
+            semester = grade.semester.coerceIn(1, 2),
+            subjectName = grade.subjectName.trim().take(40),
+            grade = grade.grade.coerceIn(1, 5),
+            credits = grade.credits.coerceIn(1, 20)
+        ))
+    }
+
+    suspend fun deleteAcademicGrade(id: String) = academicGradeDao.delete(id)
+
+    suspend fun saveUniversityBenchmark(benchmark: UniversityBenchmarkEntity) {
+        val sanitized = benchmark.copy(
+            universityName = benchmark.universityName.trim().take(60),
+            departmentName = benchmark.departmentName.trim().take(60),
+            admissionType = benchmark.admissionType.trim().take(30),
+            referenceGrade = benchmark.referenceGrade.coerceIn(1.0, 5.0),
+            sourceNote = benchmark.sourceNote.trim().take(200)
+        )
+        database.withTransaction {
+            if (sanitized.isGoal) universityBenchmarkDao.clearGoalSelection()
+            universityBenchmarkDao.upsert(sanitized)
+        }
+    }
+
+    suspend fun deleteUniversityBenchmark(id: String) = universityBenchmarkDao.delete(id)
+
+    suspend fun saveDailyLearningMemo(date: String, content: String) {
+        val oneLine = content.replace(Regex("\\s+"), " ").trim().take(200)
+        if (oneLine.isBlank()) dailyLearningMemoDao.delete(date)
+        else dailyLearningMemoDao.upsert(DailyLearningMemoEntity(date, oneLine, System.currentTimeMillis()))
+    }
+
+    suspend fun startPlannedBreak(minutes: Int): Boolean = mutex.withLock {
+        val preferences = preferenceFlow.firstValue()
+        if (preferences.timer.status in setOf("RUNNING", "PAUSED") || preferences.breakUntil > System.currentTimeMillis()) return@withLock false
+        val duration = minutes.coerceIn(1, 60)
+        if (preferences.breakBalanceMinutes < duration) return@withLock false
+        store.edit { p ->
+            p[Keys.breakBalance] = (preferences.breakBalanceMinutes - duration).coerceAtLeast(0)
+            p[Keys.breakUntil] = System.currentTimeMillis() + duration * 60_000L
+        }
+        true
+    }
+
+    suspend fun finishPlannedBreak() = mutex.withLock {
+        val now = System.currentTimeMillis()
+        val current = preferenceFlow.firstValue()
+        if (current.breakUntil <= now) return@withLock
+        val unusedMinutes = ((current.breakUntil - now) / 60_000L).toInt().coerceAtLeast(0)
+        store.edit { p ->
+            p[Keys.breakBalance] = (current.breakBalanceMinutes + unusedMinutes).coerceAtLeast(0)
+            p[Keys.breakUntil] = 0L
+        }
+    }
+
+    /** Sets a usage baseline before a timer starts or when monitoring first becomes available. */
+    suspend fun baselineStudyBonusUsage(currentUsage: Map<String, Long>) = mutex.withLock {
+        val today = todayKey()
+        studyBonusAppDao.observeAll().first().filter { it.isEnabled }.forEach { selected ->
+            val current = currentUsage[selected.packageName] ?: return@forEach
+            studyBonusAppDao.upsert(selected.copy(usageDay = today, lastUsageMillis = current))
+        }
+    }
+
+    /** Credits selected app foreground minutes only while the focus timer is running. */
+    suspend fun collectStudyBonusUsage(currentUsage: Map<String, Long>, timerRunning: Boolean) = mutex.withLock {
+        val today = todayKey()
+        val now = System.currentTimeMillis()
+        val preferences = preferenceFlow.firstValue()
+        val dayStart = Calendar.getInstance().apply {
+            timeInMillis = now
+            set(Calendar.HOUR_OF_DAY, 0); set(Calendar.MINUTE, 0); set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0)
+        }.timeInMillis
+        val alreadyEarnedToday = transactionDao.studyAppBonusCoins(dayStart, now)
+        var remainingDailyCap = (preferences.studyAppDailyBonusCapCoins - alreadyEarnedToday).coerceAtLeast(0).toLong()
+        studyBonusAppDao.observeAll().first().filter { it.isEnabled }.forEach { selected ->
+            val current = currentUsage[selected.packageName] ?: return@forEach
+            if (selected.usageDay != today || current < selected.lastUsageMillis) {
+                studyBonusAppDao.upsert(selected.copy(usageDay = today, lastUsageMillis = current))
+                return@forEach
+            }
+
+            val delta = (current - selected.lastUsageMillis).coerceAtLeast(0L)
+            val accumulated = selected.remainderMillis + if (timerRunning) delta else 0L
+            val eligibleMinutes = accumulated / 60_000L
+            val bonusMinutes = eligibleMinutes.coerceAtMost(remainingDailyCap)
+            remainingDailyCap -= bonusMinutes
+            val updated = selected.copy(
+                lastUsageMillis = current,
+                remainderMillis = if (remainingDailyCap == 0L || bonusMinutes < eligibleMinutes) 0L else accumulated % 60_000L,
+                rewardedMinutes = selected.rewardedMinutes + bonusMinutes
+            )
+            if (bonusMinutes <= 0L) {
+                studyBonusAppDao.upsert(updated)
+                return@forEach
+            }
+
+            val amount = bonusMinutes.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+            val transaction = CoinTransactionEntity(
+                id = "study-app:${UUID.randomUUID()}",
+                createdAt = System.currentTimeMillis(),
+                type = "BONUS",
+                amount = amount,
+                relatedPackageName = selected.packageName,
+                memo = "공부 앱 보너스 · ${selected.appName} · ${bonusMinutes}분",
+                durationMinutes = eligibleMinutes.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+            )
+            val inserted = database.withTransaction {
+                val row = transactionDao.insertIgnore(transaction)
+                if (row != -1L) studyBonusAppDao.upsert(updated)
+                row != -1L
+            }
+            if (inserted) {
+                store.edit { p -> p[Keys.balance] = ((p[Keys.balance] ?: 0) + amount).coerceAtLeast(0) }
+            }
+        }
+    }
+
+    suspend fun startTimer(minutes: Int, subjectPlanId: String? = null, subjectName: String = "") = mutex.withLock {
         val now = System.currentTimeMillis()
         val id = UUID.randomUUID().toString()
         store.edit { p ->
@@ -151,6 +346,8 @@ class FocusCoinRepository(
             p[Keys.timerPlanned] = minutes.coerceIn(1, 180)
             p[Keys.timerElapsed] = 0L
             p[Keys.timerResumedAt] = now
+            p[Keys.timerSubjectPlanId] = subjectPlanId.orEmpty()
+            p[Keys.timerSubjectName] = subjectName.take(40)
         }
     }
 
@@ -184,7 +381,11 @@ class FocusCoinRepository(
         val completed = min(elapsed, plannedMillis)
         val full = elapsed >= plannedMillis
         val minutes = (completed / 60_000L).toInt()
+        val totalStudyMinutes = current.breakStudyRemainderMinutes + minutes
+        val breakEarnedMinutes = totalStudyMinutes / 25 * 5
+        val breakRemainder = totalStudyMinutes % 25
         val earned = minutes * current.coinPerMinute + if (full) current.completionBonus else 0
+        val totalEarned = earned + transactionDao.studyAppBonusCoins(timer.startedAt, now)
 
         sessionDao.insertIgnore(
             StudySessionEntity(
@@ -194,7 +395,10 @@ class FocusCoinRepository(
                 plannedMinutes = timer.plannedMinutes,
                 completedMinutes = minutes,
                 status = if (full) "COMPLETED" else "ABANDONED",
-                earnedCoins = earned
+                earnedCoins = totalEarned,
+                subjectPlanId = timer.subjectPlanId,
+                subjectName = timer.subjectName,
+                breakEarnedMinutes = breakEarnedMinutes
             )
         )
         if (minutes > 0) addTransactionOnce(
@@ -203,8 +407,19 @@ class FocusCoinRepository(
         if (full && current.completionBonus > 0) addTransactionOnce(
             CoinTransactionEntity("${timer.sessionId}:bonus", now, "BONUS", current.completionBonus, memo = "집중 세션 완주 보너스")
         )
-        clearTimer()
-        earned
+        store.edit { p ->
+            p[Keys.breakBalance] = ((p[Keys.breakBalance] ?: 0) + breakEarnedMinutes).coerceAtLeast(0)
+            p[Keys.breakStudyRemainder] = breakRemainder
+            p[Keys.timerId] = ""
+            p[Keys.timerStatus] = "IDLE"
+            p[Keys.timerStartedAt] = 0L
+            p[Keys.timerPlanned] = 0
+            p[Keys.timerElapsed] = 0L
+            p[Keys.timerResumedAt] = 0L
+            p[Keys.timerSubjectPlanId] = ""
+            p[Keys.timerSubjectName] = ""
+        }
+        totalEarned
     }
 
     suspend fun refreshTimer(): Int? {
@@ -274,17 +489,6 @@ class FocusCoinRepository(
         }
     }
 
-    private suspend fun clearTimer() {
-        store.edit { p ->
-            p[Keys.timerId] = ""
-            p[Keys.timerStatus] = "IDLE"
-            p[Keys.timerStartedAt] = 0L
-            p[Keys.timerPlanned] = 0
-            p[Keys.timerElapsed] = 0L
-            p[Keys.timerResumedAt] = 0L
-        }
-    }
-
     private suspend fun Flow<PreferenceState>.firstValue(): PreferenceState = first()
 
     private fun unlockDefaults(name: String, packageName: String): Pair<Int, Int> {
@@ -296,4 +500,7 @@ class FocusCoinRepository(
             else -> 30 to 30
         }
     }
+
+    private fun todayKey(): String = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
 }
+

@@ -33,4 +33,30 @@ object UsageStatsAccess {
             emptyMap()
         }
     }
+
+    /** Reads foreground duration for only the package names explicitly chosen for study bonuses. */
+    fun studyAppForegroundMillis(context: Context, selectedPackages: Set<String>): Map<String, Long>? {
+        if (selectedPackages.isEmpty()) return emptyMap()
+        if (!PermissionStatus.usageAccessGranted(context)) return null
+        val now = System.currentTimeMillis()
+        val start = Calendar.getInstance().apply {
+            timeInMillis = now
+            set(Calendar.HOUR_OF_DAY, 0); set(Calendar.MINUTE, 0); set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0)
+        }.timeInMillis
+        return try {
+            val manager = context.getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
+            val totals = manager.queryUsageStats(UsageStatsManager.INTERVAL_DAILY, start, now)
+                .orEmpty()
+                .asSequence()
+                .filter { it.packageName in selectedPackages }
+                .groupBy { it.packageName }
+                .mapValues { (_, entries) -> entries.sumOf { it.totalTimeInForeground } }
+            selectedPackages.associateWith { totals[it] ?: 0L }
+        } catch (_: SecurityException) {
+            null
+        } catch (_: RuntimeException) {
+            null
+        }
+    }
 }
+
