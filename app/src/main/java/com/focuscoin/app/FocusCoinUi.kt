@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import android.provider.Settings
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -42,6 +43,7 @@ import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Timer
@@ -588,13 +590,22 @@ private fun parsePlanTime(text: String): Int? {
     return hour * 60 + minute
 }
 
+private fun localDateBit(date: LocalDate): Int = dayBit((date.dayOfWeek.value % 7) + 1)
+
+private fun StudyPlanEntity.occursOn(date: LocalDate): Boolean =
+    dateEpochDay?.let { it == date.toEpochDay() } ?: (weekdaysMask and localDateBit(date) != 0)
+
 private fun planConflicts(candidate: StudyPlanEntity, plans: List<StudyPlanEntity>): Boolean =
     candidate.isEnabled && plans.any { existing ->
-        existing.id != candidate.id && existing.isEnabled &&
-            (existing.weekdaysMask and candidate.weekdaysMask) != 0 &&
-            candidate.startMinute < existing.endMinute && existing.startMinute < candidate.endMinute
+        if (existing.id == candidate.id || !existing.isEnabled) return@any false
+        val daysOverlap = when {
+            candidate.dateEpochDay != null && existing.dateEpochDay != null -> candidate.dateEpochDay == existing.dateEpochDay
+            candidate.dateEpochDay != null -> existing.weekdaysMask and localDateBit(LocalDate.ofEpochDay(candidate.dateEpochDay)) != 0
+            existing.dateEpochDay != null -> candidate.weekdaysMask and localDateBit(LocalDate.ofEpochDay(existing.dateEpochDay)) != 0
+            else -> candidate.weekdaysMask and existing.weekdaysMask != 0
+        }
+        daysOverlap && candidate.startMinute < existing.endMinute && existing.startMinute < candidate.endMinute
     }
-
 @Composable
 private fun PlannerScreen(
     state: MainUiState,
