@@ -66,8 +66,6 @@ class FocusCoinRepository(
     private val studyBonusAppDao = database.studyBonusAppDao()
     private val studyPlanDao = database.studyPlanDao()
     private val subjectPlanDao = database.subjectPlanDao()
-    private val academicGradeDao = database.academicGradeDao()
-    private val universityBenchmarkDao = database.universityBenchmarkDao()
     private val dailyLearningMemoDao = database.dailyLearningMemoDao()
     private val sessionDao = database.studySessionDao()
     private val transactionDao = database.coinTransactionDao()
@@ -125,8 +123,6 @@ class FocusCoinRepository(
     val studyBonusApps: Flow<List<StudyBonusAppEntity>> = studyBonusAppDao.observeAll()
     val studyPlans: Flow<List<StudyPlanEntity>> = studyPlanDao.observeAll()
     val subjectPlans: Flow<List<SubjectPlanEntity>> = subjectPlanDao.observeAll()
-    val academicGrades: Flow<List<AcademicGradeEntity>> = academicGradeDao.observeAll()
-    val universityBenchmarks: Flow<List<UniversityBenchmarkEntity>> = universityBenchmarkDao.observeAll()
     val dailyLearningMemos: Flow<List<DailyLearningMemoEntity>> = dailyLearningMemoDao.observeAll()
     val sessions: Flow<List<StudySessionEntity>> = sessionDao.observeAll()
     val transactions: Flow<List<CoinTransactionEntity>> = transactionDao.observeAll()
@@ -201,7 +197,7 @@ class FocusCoinRepository(
 
     suspend fun saveStudyPlan(plan: StudyPlanEntity) = studyPlanDao.upsert(plan.copy(
         title = plan.title.trim().take(60),
-        weekdaysMask = plan.weekdaysMask and 0x7F,
+        weekdaysMask = if (plan.dateEpochDay == null) plan.weekdaysMask and 0x7F else 0,
         startMinute = plan.startMinute.coerceIn(0, 1439),
         endMinute = plan.endMinute.coerceIn(1, 1440),
         allowedPackages = plan.allowedPackageSet().joinToString(",")
@@ -215,34 +211,6 @@ class FocusCoinRepository(
     ))
 
     suspend fun deleteSubjectPlan(id: String) = subjectPlanDao.delete(id)
-
-    suspend fun saveAcademicGrade(grade: AcademicGradeEntity) {
-        academicGradeDao.upsert(grade.copy(
-            academicYear = grade.academicYear.coerceIn(2000, 2100),
-            semester = grade.semester.coerceIn(1, 2),
-            subjectName = grade.subjectName.trim().take(40),
-            grade = grade.grade.coerceIn(1, 5),
-            credits = grade.credits.coerceIn(1, 20)
-        ))
-    }
-
-    suspend fun deleteAcademicGrade(id: String) = academicGradeDao.delete(id)
-
-    suspend fun saveUniversityBenchmark(benchmark: UniversityBenchmarkEntity) {
-        val sanitized = benchmark.copy(
-            universityName = benchmark.universityName.trim().take(60),
-            departmentName = benchmark.departmentName.trim().take(60),
-            admissionType = benchmark.admissionType.trim().take(30),
-            referenceGrade = benchmark.referenceGrade.coerceIn(1.0, 5.0),
-            sourceNote = benchmark.sourceNote.trim().take(200)
-        )
-        database.withTransaction {
-            if (sanitized.isGoal) universityBenchmarkDao.clearGoalSelection()
-            universityBenchmarkDao.upsert(sanitized)
-        }
-    }
-
-    suspend fun deleteUniversityBenchmark(id: String) = universityBenchmarkDao.delete(id)
 
     suspend fun saveDailyLearningMemo(date: String, content: String) {
         val oneLine = content.replace(Regex("\\s+"), " ").trim().take(200)
@@ -503,4 +471,3 @@ class FocusCoinRepository(
 
     private fun todayKey(): String = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
 }
-

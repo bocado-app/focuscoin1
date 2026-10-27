@@ -42,7 +42,6 @@ import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Timer
@@ -96,6 +95,9 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.time.LocalDate
+import java.time.YearMonth
+import java.time.format.DateTimeFormatter
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
@@ -178,11 +180,7 @@ fun FocusCoinRoot(
                     state,
                     viewModel,
                     permissionRefresh,
-                    onStartTimer = { subject -> nav.navigate("timer?subjectId=${subject.id}") },
-                    onStartCollegeStudy = { subjectName ->
-                        val subject = subjectName?.let { name -> state.subjectPlans.firstOrNull { it.subjectName.equals(name, ignoreCase = true) } }
-                        if (subject == null) nav.navigate("timer") else nav.navigate("timer?subjectId=${subject.id}")
-                    }
+                    onStartTimer = { subject -> nav.navigate("timer?subjectId=${subject.id}") }
                 )
             }
             composable("report") { ReportScreen(state, permissionRefresh) }
@@ -603,253 +601,18 @@ private fun PlannerScreen(
     viewModel: FocusCoinViewModel,
     permissionRefresh: Int,
     onStartTimer: (SubjectPlanEntity) -> Unit,
-    onStartCollegeStudy: (String?) -> Unit
 ) {
     var plannerPane by remember { mutableIntStateOf(0) }
     Column(Modifier.fillMaxSize()) {
         Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             FilterChip(selected = plannerPane == 0, onClick = { plannerPane = 0 }, label = { Text("시험·과목") })
             FilterChip(selected = plannerPane == 1, onClick = { plannerPane = 1 }, label = { Text("시간표 앱 제한") })
-            FilterChip(selected = plannerPane == 2, onClick = { plannerPane = 2 }, label = { Text("대학 추천") })
         }
         when (plannerPane) {
             0 -> SubjectPlannerScreen(state, viewModel, onStartTimer)
-            1 -> WeeklyScheduleScreen(state, viewModel, permissionRefresh)
-            else -> CollegeGoalScreen(state, viewModel, onStartCollegeStudy)
+            1 -> CalendarScheduleScreen(state, viewModel, permissionRefresh)
         }
     }
-}
-
-@Composable
-private fun CollegeGoalScreen(
-    state: MainUiState,
-    viewModel: FocusCoinViewModel,
-    onStartStudy: (String?) -> Unit
-) {
-    var addGrade by remember { mutableStateOf(false) }
-    var addBenchmark by remember { mutableStateOf(false) }
-    val credits = state.academicGrades.sumOf { it.credits.coerceAtLeast(1) }
-    val average = if (credits == 0) null else state.academicGrades.sumOf { it.grade * it.credits }.toDouble() / credits
-    val goal = state.universityBenchmarks.firstOrNull { it.isGoal }
-    val gradeSummary = state.academicGrades
-        .groupBy { it.academicYear to it.semester }
-        .maxByOrNull { it.key.first * 10 + it.key.second }
-        ?.value
-    val featuredSubject = gradeSummary?.maxByOrNull { it.grade }?.subjectName
-    val weeklyStart = startOfWeek(System.currentTimeMillis())
-    val featuredStudyMinutes = featuredSubject?.let { subjectName ->
-        state.sessions.filter { it.startedAt >= weeklyStart && it.subjectName.equals(subjectName, ignoreCase = true) }.sumOf { it.completedMinutes }
-    } ?: 0
-    val missionProgress = (featuredStudyMinutes / 75f).coerceIn(0f, 1f)
-    val readiness = if (average == null || goal == null) null else when {
-        average <= goal.referenceGrade -> 100
-        goal.referenceGrade >= 5.0 -> 0
-        else -> (((5.0 - average) / (5.0 - goal.referenceGrade)) * 100).toInt().coerceIn(0, 99)
-    }
-
-    LazyColumn(Modifier.fillMaxSize(), contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 16.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        item { PageHeading("목표 대학 추천", "성적을 기록하고 오늘의 공부 미션으로 이어가요") }
-        item {
-            Card(shape = RoundedCornerShape(20.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)) {
-                Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("참고용 준비도 안내", fontWeight = FontWeight.Bold)
-                    Text("2025년 고1부터 내신 5등급제가 적용되고 첫 대입은 2028학년도입니다. 새 제도의 실제 합격 결과가 축적되기 전까지 대학별 기준을 임의로 만들지 않아요. 대학 공식 자료 등을 참고해 기준 등급을 등록하면 내 성적과 비교해볼 수 있습니다. 준비도와 추천 분류는 입력한 기준에 따른 비교이며 합격 가능성이나 합격 보장이 아닙니다.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSecondaryContainer)
-                }
-            }
-        }
-        item {
-            Card(shape = RoundedCornerShape(20.dp)) {
-                Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Column(Modifier.weight(1f)) {
-                            Text("내신 기록", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                            Text(if (average == null) "성적을 입력하면 5등급제 누적 평균을 계산해요." else "입력한 과목의 이수 단위 가중 누적 평균", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                        if (average != null) Text(String.format(Locale.KOREA, "%.2f", average), fontSize = 26.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
-                    }
-                    OutlinedButton(onClick = { addGrade = true }, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Filled.Add, null); Text("  성적 추가") }
-                    if (state.academicGrades.isEmpty()) {
-                        Text("아직 등록한 성적이 없어요. 학기·과목별 1~5등급과 이수 단위를 입력해보세요.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    } else {
-                        state.academicGrades.sortedWith(compareByDescending<AcademicGradeEntity> { it.academicYear }.thenByDescending { it.semester }.thenBy { it.subjectName }).forEach { grade ->
-                            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                                Column(Modifier.weight(1f)) {
-                                    Text("${grade.academicYear}년 ${grade.semester}학기 · ${grade.subjectName}", fontWeight = FontWeight.SemiBold)
-                                    Text("이수 단위 ${grade.credits}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                }
-                                Text("${grade.grade}등급", fontWeight = FontWeight.Bold)
-                                IconButton(onClick = { viewModel.deleteAcademicGrade(grade.id) }) { Icon(Icons.Filled.Remove, "성적 삭제", tint = MaterialTheme.colorScheme.error) }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        item {
-            Card(shape = RoundedCornerShape(20.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)) {
-                Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("나의 목표", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                    if (goal == null) {
-                        Text("목표 대학과 참고 기준을 등록하면 입력한 성적과 비교하고 준비도를 보여줘요.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onPrimaryContainer)
-                    } else {
-                        Text("${goal.universityName} · ${goal.departmentName}", fontSize = 20.sp, fontWeight = FontWeight.Bold)
-                        Text("${goal.admissionType} · 등록한 참고 기준 ${String.format(Locale.KOREA, "%.2f", goal.referenceGrade)}등급", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onPrimaryContainer)
-                        if (readiness != null) {
-                            LinearProgressIndicator(progress = { readiness / 100f }, modifier = Modifier.fillMaxWidth())
-                            Text("목표 대비 학업 준비도 $readiness% · 합격 확률이 아닙니다.", fontWeight = FontWeight.SemiBold)
-                            Text("입력한 과목의 이수 단위 가중 평균과 목표 기준 등급을 비교해 산출합니다. 대학별 전형 요소 전체를 반영한 값이 아닙니다.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onPrimaryContainer)
-                        } else Text("성적을 입력하면 목표 기준과 비교해요.", style = MaterialTheme.typography.bodySmall)
-                    }
-                    OutlinedButton(onClick = { addBenchmark = true }, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Filled.Add, null); Text("  대학 기준 추가") }
-                }
-            }
-        }
-        item {
-            Card(shape = RoundedCornerShape(20.dp)) {
-                Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("대학 후보 비교", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                    Text("현재 평균과 등록한 대학별 기준 등급을 비교한 참고 분류예요.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    if (state.universityBenchmarks.isEmpty()) {
-                        Text("대학별 기준을 등록하면 도전·기준 근접·기준 여유로 정렬해요.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    } else {
-                        state.universityBenchmarks.sortedWith(compareBy<UniversityBenchmarkEntity> { benchmark ->
-                            if (average == null) 10.0 else average - benchmark.referenceGrade
-                        }.thenBy { it.universityName }).forEach { benchmark ->
-                            val difference = average?.minus(benchmark.referenceGrade)
-                            val category = when {
-                                difference == null -> "성적 입력 필요"
-                                difference <= -0.5 -> "기준보다 여유"
-                                difference <= 0.5 -> "기준 근접"
-                                else -> "도전 참고"
-                            }
-                            Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .45f)).padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Column(Modifier.weight(1f)) {
-                                        Text("${benchmark.universityName} · ${benchmark.departmentName}", fontWeight = FontWeight.Bold)
-                                        Text("${benchmark.admissionType} · 기준 ${String.format(Locale.KOREA, "%.2f", benchmark.referenceGrade)}등급${if (benchmark.isGoal) " · 목표" else ""}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                    }
-                                    Text(category, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
-                                    IconButton(onClick = { viewModel.deleteUniversityBenchmark(benchmark.id) }) { Icon(Icons.Filled.Remove, "대학 기준 삭제", tint = MaterialTheme.colorScheme.error) }
-                                }
-                                if (benchmark.sourceNote.isNotBlank()) Text("기준 출처: ${benchmark.sourceNote}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        if (featuredSubject != null) {
-            item {
-                Card(shape = RoundedCornerShape(20.dp)) {
-                    Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text("이번 주 추천 미션", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                        Text("이번 주 ${featuredSubject} 집중 75분 채우기 · 25분 세 번 분량", fontWeight = FontWeight.SemiBold)
-                        LinearProgressIndicator(progress = { missionProgress }, modifier = Modifier.fillMaxWidth())
-                        Text("${featuredStudyMinutes.coerceAtMost(75)} / 75분 · ${if (missionProgress >= 1f) "미션 완료" else "기록한 집중 시간 기준"}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        if (missionProgress < 1f) {
-                            if (state.subjectPlans.any { it.subjectName.equals(featuredSubject, ignoreCase = true) }) {
-                                Button(onClick = { onStartStudy(featuredSubject) }, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Filled.PlayArrow, null); Text("  ${featuredSubject} 공부하기") }
-                            } else {
-                                Text("시험·과목 탭에 같은 과목의 계획을 등록하면 이 미션의 타이머 기록을 연결할 수 있어요.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        item { Spacer(Modifier.height(8.dp)) }
-    }
-
-    if (addGrade) AcademicGradeDialog(
-        onDismiss = { addGrade = false },
-        onSave = { year, semester, subject, grade, credit ->
-            val id = "$year-$semester-${subject.trim().lowercase(Locale.ROOT)}"
-            viewModel.saveAcademicGrade(AcademicGradeEntity(id, year, semester, subject, grade, credit))
-            addGrade = false
-        }
-    )
-    if (addBenchmark) UniversityBenchmarkDialog(
-        onDismiss = { addBenchmark = false },
-        onSave = { university, department, admissionType, referenceGrade, source, isGoal ->
-            viewModel.saveUniversityBenchmark(UniversityBenchmarkEntity(java.util.UUID.randomUUID().toString(), university, department, admissionType, referenceGrade, source, isGoal))
-            addBenchmark = false
-        }
-    )
-}
-
-@Composable
-private fun AcademicGradeDialog(
-    onDismiss: () -> Unit,
-    onSave: (Int, Int, String, Int, Int) -> Unit
-) {
-    var year by remember { mutableStateOf(Calendar.getInstance().get(Calendar.YEAR).toString()) }
-    var semester by remember { mutableIntStateOf(1) }
-    var subject by remember { mutableStateOf("") }
-    var grade by remember { mutableStateOf("") }
-    var credits by remember { mutableStateOf("1") }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("5등급 성적 입력") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(year, { year = it.filter(Char::isDigit).take(4) }, label = { Text("학년도") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), singleLine = true)
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    FilterChip(selected = semester == 1, onClick = { semester = 1 }, label = { Text("1학기") })
-                    FilterChip(selected = semester == 2, onClick = { semester = 2 }, label = { Text("2학기") })
-                }
-                OutlinedTextField(subject, { subject = it.take(40) }, label = { Text("과목") }, singleLine = true)
-                OutlinedTextField(grade, { grade = it.filter(Char::isDigit).take(1) }, label = { Text("등급 (1~5)") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), singleLine = true)
-                OutlinedTextField(credits, { credits = it.filter(Char::isDigit).take(2) }, label = { Text("이수 단위") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), singleLine = true)
-            }
-        },
-        confirmButton = {
-            val validYear = year.toIntOrNull()?.let { it in 2000..2100 } == true
-            val validGrade = grade.toIntOrNull()?.let { it in 1..5 } == true
-            val validCredits = credits.toIntOrNull()?.let { it in 1..20 } == true
-            TextButton(onClick = { onSave(year.toIntOrNull() ?: 0, semester, subject.trim(), grade.toIntOrNull() ?: 0, credits.toIntOrNull() ?: 0) }, enabled = subject.isNotBlank() && validYear && validGrade && validCredits) { Text("저장") }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("취소") } }
-    )
-}
-
-@Composable
-private fun UniversityBenchmarkDialog(
-    onDismiss: () -> Unit,
-    onSave: (String, String, String, Double, String, Boolean) -> Unit
-) {
-    var university by remember { mutableStateOf("") }
-    var department by remember { mutableStateOf("") }
-    var admissionType by remember { mutableStateOf("학생부교과") }
-    var referenceGrade by remember { mutableStateOf("") }
-    var source by remember { mutableStateOf("") }
-    var isGoal by remember { mutableStateOf(false) }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("대학별 참고 기준 추가") },
-        text = {
-            Column(Modifier.heightIn(max = 440.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("대학 공식 자료에서 확인한 기준 등급을 입력하세요. 합격선이나 합격 확률로 확정 해석하지 않습니다.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                OutlinedTextField(university, { university = it.take(60) }, label = { Text("대학") }, singleLine = true)
-                OutlinedTextField(department, { department = it.take(60) }, label = { Text("학과·모집단위") }, singleLine = true)
-                Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    listOf("학생부교과", "학생부종합", "정시", "기타").forEach { type ->
-                        FilterChip(selected = admissionType == type, onClick = { admissionType = type }, label = { Text(type) })
-                    }
-                }
-                OutlinedTextField(referenceGrade, { referenceGrade = it.filter { ch -> ch.isDigit() || ch == '.' }.take(4) }, label = { Text("참고 평균 등급 (1~5)") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), singleLine = true)
-                OutlinedTextField(source, { source = it.take(200) }, label = { Text("자료 출처 / 기준 설명") }, placeholder = { Text("예: 대학 입학처 2028 전형 안내") }, minLines = 2)
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Checkbox(checked = isGoal, onCheckedChange = { isGoal = it })
-                    Text("나의 목표 대학으로 설정")
-                }
-            }
-        },
-        confirmButton = {
-            val validReference = referenceGrade.toDoubleOrNull()?.let { it in 1.0..5.0 } == true
-            TextButton(onClick = { onSave(university.trim(), department.trim(), admissionType, referenceGrade.toDoubleOrNull() ?: 0.0, source.trim(), isGoal) }, enabled = university.isNotBlank() && department.isNotBlank() && validReference) { Text("저장") }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("취소") } }
-    )
 }
 
 @Composable
@@ -978,12 +741,24 @@ private fun SubjectPlanDialog(plan: SubjectPlanEntity?, onDismiss: () -> Unit, o
         dismissButton = { TextButton(onClick = onDismiss) { Text("취소") } })
 }
 
+private fun calendarDays(month: YearMonth): List<LocalDate?> {
+    val offset = month.atDay(1).dayOfWeek.value - 1
+    val cellCount = ((offset + month.lengthOfMonth() + 6) / 7) * 7
+    return List(cellCount) { index ->
+        val day = index - offset + 1
+        if (day in 1..month.lengthOfMonth()) month.atDay(day) else null
+    }
+}
+
 @Composable
-private fun WeeklyScheduleScreen(state: MainUiState, viewModel: FocusCoinViewModel, permissionRefresh: Int) {
+private fun CalendarScheduleScreen(state: MainUiState, viewModel: FocusCoinViewModel, permissionRefresh: Int) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val accessibility = remember(permissionRefresh) { PermissionStatus.accessibilityEnabled(context) }
+    var displayedMonth by remember { mutableStateOf(YearMonth.now()) }
+    var selectedDate by remember { mutableStateOf(LocalDate.now()) }
     var editorPlan by remember { mutableStateOf<StudyPlanEntity?>(null) }
     var creatingPlan by remember { mutableStateOf(false) }
+    var editorStartMinute by remember { mutableIntStateOf(9 * 60) }
     var deletePlan by remember { mutableStateOf<StudyPlanEntity?>(null) }
     var message by remember { mutableStateOf("") }
     var now by remember { mutableStateOf(System.currentTimeMillis()) }
@@ -994,11 +769,22 @@ private fun WeeklyScheduleScreen(state: MainUiState, viewModel: FocusCoinViewMod
         }
     }
     val activePlan = state.studyPlans.firstOrNull { it.isActiveAt(now) }
-    Column(Modifier.fillMaxSize()) {
-        Column(Modifier.padding(horizontal = 20.dp, vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            PageHeading("스터디 플래너", "요일과 시간에 맞춰 집중 일정을 관리하세요")
-            Text("일정 시간에는 선택한 앱과 시스템 앱을 사용할 수 있습니다. 그 밖의 일반 앱은 일정 중 잠깁니다.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            if (activePlan != null) {
+    val selectedPlans = state.studyPlans.filter { it.occursOn(selectedDate) }.sortedBy { it.startMinute }
+    val today = LocalDate.now()
+
+    LazyColumn(
+        Modifier.fillMaxSize(),
+        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        item {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                PageHeading("스터디 플래너", "날짜를 고르고 시간 칸을 눌러 계획을 세워보세요")
+                Text("일정 중에는 허용한 앱과 시스템 앱을 사용할 수 있어요. 다른 일반 앱은 잠깁니다.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+        if (activePlan != null) {
+            item {
                 Card(shape = RoundedCornerShape(18.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)) {
                     Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                         Text("지금 집중 중 · ${activePlan.title}", fontWeight = FontWeight.Bold)
@@ -1006,46 +792,133 @@ private fun WeeklyScheduleScreen(state: MainUiState, viewModel: FocusCoinViewMod
                     }
                 }
             }
-            if (!accessibility) {
+        }
+        if (!accessibility) {
+            item {
                 Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer)) {
                     Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
                         Text("시간표에 따른 앱 제한을 쓰려면 접근성 서비스를 켜주세요.", fontWeight = FontWeight.SemiBold)
-                        Text("앱 이름이나 화면 내용은 읽지 않고 실행된 앱의 패키지명만 확인합니다.", style = MaterialTheme.typography.bodySmall)
+                        Text("실행된 앱의 패키지명만 확인하고 화면 내용은 읽지 않습니다.", style = MaterialTheme.typography.bodySmall)
                         TextButton(onClick = { PermissionStatus.openAccessibilitySettings(context) }) { Text("접근성 설정 열기") }
                     }
                 }
             }
-            if (message.isNotBlank()) Text(message, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
-            Button(onClick = { creatingPlan = true }, modifier = Modifier.fillMaxWidth()) {
-                Icon(Icons.Filled.Add, null); Spacer(Modifier.width(6.dp)); Text("일정 추가")
+        }
+        if (message.isNotBlank()) item { Text(message, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
+        item {
+            Card(shape = RoundedCornerShape(20.dp)) {
+                Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        TextButton(onClick = {
+                            val next = displayedMonth.minusMonths(1)
+                            displayedMonth = next
+                            selectedDate = next.atDay(selectedDate.dayOfMonth.coerceAtMost(next.lengthOfMonth()))
+                        }) { Text("‹", fontSize = 24.sp) }
+                        Text("${displayedMonth.year}년 ${displayedMonth.monthValue}월", Modifier.weight(1f), textAlign = TextAlign.Center, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                        TextButton(onClick = {
+                            val next = displayedMonth.plusMonths(1)
+                            displayedMonth = next
+                            selectedDate = next.atDay(selectedDate.dayOfMonth.coerceAtMost(next.lengthOfMonth()))
+                        }) { Text("›", fontSize = 24.sp) }
+                        TextButton(onClick = { displayedMonth = YearMonth.from(today); selectedDate = today }) { Text("오늘") }
+                    }
+                    Row(Modifier.fillMaxWidth()) {
+                        listOf("월", "화", "수", "목", "금", "토", "일").forEach { day ->
+                            Text(day, Modifier.weight(1f), textAlign = TextAlign.Center, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                    calendarDays(displayedMonth).chunked(7).forEach { week ->
+                        Row(Modifier.fillMaxWidth()) {
+                            week.forEach { date ->
+                                if (date == null) {
+                                    Box(Modifier.weight(1f).height(42.dp))
+                                } else {
+                                    val selected = date == selectedDate
+                                    val hasPlan = state.studyPlans.any { it.isEnabled && it.occursOn(date) }
+                                    Column(
+                                        Modifier.weight(1f).height(42.dp).clip(CircleShape)
+                                            .background(if (selected) MaterialTheme.colorScheme.primary else Color.Transparent)
+                                            .clickable {
+                                                selectedDate = date
+                                                displayedMonth = YearMonth.from(date)
+                                            },
+                                        horizontalAlignment = Alignment.CenterHorizontally,
+                                        verticalArrangement = Arrangement.Center
+                                    ) {
+                                        Text(
+                                            date.dayOfMonth.toString(),
+                                            color = if (selected) MaterialTheme.colorScheme.onPrimary else if (date == today) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                                            fontWeight = if (selected || date == today) FontWeight.Bold else FontWeight.Normal
+                                        )
+                                        Box(Modifier.size(4.dp).background(if (hasPlan) if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.tertiary else Color.Transparent, CircleShape))
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
-        if (state.studyPlans.isEmpty()) {
-            Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-                Text("아직 플래너 일정이 없어요.\n요일과 시간, 허용할 앱을 정해보세요.", textAlign = TextAlign.Center, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        item {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(selectedDate.format(DateTimeFormatter.ofPattern("M월 d일 (E)", Locale.KOREAN)), fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                    Text("시간 칸을 누르면 일정이 추가됩니다.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                Button(onClick = { editorStartMinute = 9 * 60; creatingPlan = true }) {
+                    Icon(Icons.Filled.Add, null); Spacer(Modifier.width(4.dp)); Text("일정 추가")
+                }
             }
-        } else {
-            LazyColumn(Modifier.weight(1f).fillMaxWidth(), contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 16.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                items(state.studyPlans, key = { it.id }) { plan ->
-                    val dayText = planWeekdays.filter { (plan.weekdaysMask and dayBit(it.second)) != 0 }.joinToString(" ") { it.first }
-                    val allowedNames = plan.allowedPackageSet().map { pkg -> state.installedApps.firstOrNull { it.packageName == pkg }?.appName ?: pkg }
-                    Card(shape = RoundedCornerShape(20.dp), colors = CardDefaults.cardColors(containerColor = if (plan.isActiveAt(now)) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surface)) {
-                        Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Column(Modifier.weight(1f)) {
-                                    Text(plan.title, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
-                                    Text("$dayText · ${formatPlanTime(plan.startMinute)}–${formatPlanTime(plan.endMinute)}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                }
-                                Switch(checked = plan.isEnabled, onCheckedChange = { enabled ->
-                                    val changed = plan.copy(isEnabled = enabled)
-                                    if (planConflicts(changed, state.studyPlans)) message = "같은 요일과 시간에 겹치는 일정이 있어 켤 수 없습니다."
-                                    else { message = ""; viewModel.saveStudyPlan(changed) }
+        }
+        if (selectedPlans.isEmpty()) {
+            item {
+                Card(shape = RoundedCornerShape(16.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+                    Text("이 날짜에 등록된 일정이 없어요. 원하는 시간 칸을 눌러 추가해 보세요.", Modifier.fillMaxWidth().padding(14.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        }
+        items((0..23).toList(), key = { "hour-$it" }) { hour ->
+            val startOfHour = hour * 60
+            val endOfHour = startOfHour + 60
+            val hourPlans = selectedPlans.filter { it.startMinute < endOfHour && it.endMinute > startOfHour }
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
+                Text("%02d:00".format(hour), Modifier.width(50.dp).padding(top = 12.dp), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (hourPlans.isEmpty()) {
+                    Card(
+                        Modifier.weight(1f).height(54.dp).clickable { editorStartMinute = startOfHour; creatingPlan = true },
+                        shape = RoundedCornerShape(14.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                    ) {
+                        Box(Modifier.fillMaxSize().padding(horizontal = 12.dp), contentAlignment = Alignment.CenterStart) {
+                            Text("＋ 일정 추가", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                } else {
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        hourPlans.forEach { plan ->
+                            Card(
+                                Modifier.fillMaxWidth().clickable { editorPlan = plan },
+                                shape = RoundedCornerShape(14.dp),
+                                colors = CardDefaults.cardColors(containerColor = when {
+                                    !plan.isEnabled -> MaterialTheme.colorScheme.surfaceVariant
+                                    plan.isActiveAt(now) -> MaterialTheme.colorScheme.secondaryContainer
+                                    else -> MaterialTheme.colorScheme.primaryContainer
                                 })
-                            }
-                            Text("허용 앱 ${allowedNames.size}개${if (allowedNames.isEmpty()) " · FocusCoin과 시스템 화면만 허용" else " · ${allowedNames.take(3).joinToString(", ")}${if (allowedNames.size > 3) " 외 ${allowedNames.size - 3}개" else ""}"}", style = MaterialTheme.typography.bodySmall)
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                TextButton(onClick = { editorPlan = plan }) { Text("수정") }
-                                TextButton(onClick = { deletePlan = plan }) { Text("삭제", color = MaterialTheme.colorScheme.error) }
+                            ) {
+                                Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp)) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Column(Modifier.weight(1f)) {
+                                            Text(if (plan.startMinute / 60 == hour) plan.title else "${plan.title} · 계속", fontWeight = FontWeight.SemiBold, maxLines = 1)
+                                            Text("${formatPlanTime(plan.startMinute)}–${formatPlanTime(plan.endMinute)} · 허용 앱 ${plan.allowedPackageSet().size}개", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                        }
+                                        Switch(checked = plan.isEnabled, onCheckedChange = { enabled ->
+                                            val changed = plan.copy(isEnabled = enabled)
+                                            if (planConflicts(changed, state.studyPlans)) message = "같은 날짜와 시간에 겹치는 일정이 있어 켤 수 없습니다."
+                                            else { message = ""; viewModel.saveStudyPlan(changed) }
+                                        })
+                                        TextButton(onClick = { deletePlan = plan }) { Text("삭제", color = MaterialTheme.colorScheme.error) }
+                                    }
+                                }
                             }
                         }
                     }
@@ -1056,10 +929,12 @@ private fun WeeklyScheduleScreen(state: MainUiState, viewModel: FocusCoinViewMod
     if (creatingPlan || editorPlan != null) {
         StudyPlanEditorDialog(
             plan = editorPlan,
+            selectedDate = selectedDate,
+            initialStartMinute = editorStartMinute,
             apps = state.installedApps,
             existingPlans = state.studyPlans,
             onDismiss = { creatingPlan = false; editorPlan = null },
-            onSave = { plan -> viewModel.saveStudyPlan(plan); message = ""; creatingPlan = false; editorPlan = null }
+            onSave = { plan -> viewModel.saveStudyPlan(plan); message = "일정을 저장했어요."; creatingPlan = false; editorPlan = null }
         )
     }
     deletePlan?.let { plan ->
@@ -1076,34 +951,53 @@ private fun WeeklyScheduleScreen(state: MainUiState, viewModel: FocusCoinViewMod
 @Composable
 private fun StudyPlanEditorDialog(
     plan: StudyPlanEntity?,
+    selectedDate: LocalDate,
+    initialStartMinute: Int,
     apps: List<InstalledApp>,
     existingPlans: List<StudyPlanEntity>,
     onDismiss: () -> Unit,
     onSave: (StudyPlanEntity) -> Unit
 ) {
-    var title by remember(plan?.id) { mutableStateOf(plan?.title ?: "공부 시간") }
-    var weekdays by remember(plan?.id) { mutableIntStateOf(plan?.weekdaysMask ?: (dayBit(Calendar.MONDAY) or dayBit(Calendar.TUESDAY) or dayBit(Calendar.WEDNESDAY) or dayBit(Calendar.THURSDAY) or dayBit(Calendar.FRIDAY))) }
-    var startText by remember(plan?.id) { mutableStateOf(formatPlanTime(plan?.startMinute ?: 19 * 60)) }
-    var endText by remember(plan?.id) { mutableStateOf(formatPlanTime(plan?.endMinute ?: 20 * 60)) }
-    var allowedPackages by remember(plan?.id) { mutableStateOf(plan?.allowedPackageSet() ?: emptySet()) }
+    var title by remember(plan?.id, selectedDate.toEpochDay()) { mutableStateOf(plan?.title ?: "공부 시간") }
+    var planDate by remember(plan?.id, selectedDate.toEpochDay()) {
+        mutableStateOf(plan?.dateEpochDay?.let { LocalDate.ofEpochDay(it) } ?: selectedDate)
+    }
+    var repeatsWeekly by remember(plan?.id, selectedDate.toEpochDay()) { mutableStateOf(plan != null && plan.dateEpochDay == null) }
+    var weekdays by remember(plan?.id, selectedDate.toEpochDay()) {
+        mutableIntStateOf(plan?.weekdaysMask?.takeIf { it != 0 } ?: localDateBit(selectedDate))
+    }
+    var startText by remember(plan?.id, initialStartMinute) { mutableStateOf(formatPlanTime(plan?.startMinute ?: initialStartMinute)) }
+    var endText by remember(plan?.id, initialStartMinute) {
+        mutableStateOf(formatPlanTime(plan?.endMinute ?: (initialStartMinute + 60).coerceAtMost(1440)))
+    }
+    var allowedPackages by remember(plan?.id, selectedDate.toEpochDay()) { mutableStateOf(plan?.allowedPackageSet() ?: emptySet()) }
     var error by remember(plan?.id) { mutableStateOf("") }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(if (plan == null) "플래너 일정 추가" else "일정 수정") },
+        title = { Text(if (plan == null) "스터디 플랜 추가" else "스터디 플랜 수정") },
         text = {
             Column(Modifier.heightIn(max = 580.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 OutlinedTextField(title, { title = it.take(60) }, label = { Text("일정 이름") }, singleLine = true)
-                Text("반복 요일", fontWeight = FontWeight.SemiBold)
-                planWeekdays.chunked(4).forEach { rowDays ->
-                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                        rowDays.forEach { (label, day) ->
-                            FilterChip(
-                                selected = weekdays and dayBit(day) != 0,
-                                onClick = { weekdays = weekdays xor dayBit(day) },
-                                label = { Text(label) }
-                            )
+                Text("날짜 · ${planDate.format(DateTimeFormatter.ofPattern("yyyy년 M월 d일", Locale.KOREAN))}", fontWeight = FontWeight.SemiBold)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(checked = repeatsWeekly, onCheckedChange = { repeatsWeekly = it })
+                    Text("매주 반복")
+                }
+                if (repeatsWeekly) {
+                    Text("반복 요일", fontWeight = FontWeight.SemiBold)
+                    planWeekdays.chunked(4).forEach { rowDays ->
+                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            rowDays.forEach { (label, day) ->
+                                FilterChip(
+                                    selected = weekdays and dayBit(day) != 0,
+                                    onClick = { weekdays = weekdays xor dayBit(day) },
+                                    label = { Text(label) }
+                                )
+                            }
                         }
                     }
+                } else {
+                    Text("선택한 날짜에만 적용됩니다.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedTextField(startText, { startText = it.take(5) }, modifier = Modifier.weight(1f), label = { Text("시작 (시:분)") }, placeholder = { Text("19:00") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text), singleLine = true)
@@ -1111,6 +1005,7 @@ private fun StudyPlanEditorDialog(
                 }
                 Text("일정 중 허용할 앱", fontWeight = FontWeight.SemiBold)
                 Text("선택하지 않은 일반 앱은 일정 시간 동안 잠깁니다. FocusCoin과 시스템 앱은 사용할 수 있습니다.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (apps.isEmpty()) Text("설치된 앱 목록을 불러오지 못했어요. 앱 목록이 준비된 뒤 다시 시도해 주세요.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
                 Column(Modifier.fillMaxWidth().heightIn(max = 230.dp).verticalScroll(rememberScrollState())) {
                     apps.forEach { app ->
                         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -1134,20 +1029,21 @@ private fun StudyPlanEditorDialog(
                 val end = parsePlanTime(endText)
                 when {
                     title.isBlank() -> error = "일정 이름을 입력해 주세요."
-                    weekdays == 0 -> error = "반복할 요일을 하나 이상 선택해 주세요."
+                    repeatsWeekly && weekdays == 0 -> error = "반복할 요일을 하나 이상 선택해 주세요."
                     start == null || end == null || start >= end -> error = "시작과 종료 시간을 올바르게 입력해 주세요. (자정 넘김은 지원하지 않습니다.)"
                     allowedPackages.isEmpty() -> error = "일정 중 사용할 앱을 하나 이상 선택해 주세요."
                     else -> {
                         val candidate = StudyPlanEntity(
                             id = plan?.id ?: java.util.UUID.randomUUID().toString(),
                             title = title.trim(),
-                            weekdaysMask = weekdays,
+                            weekdaysMask = if (repeatsWeekly) weekdays else 0,
                             startMinute = start,
                             endMinute = end,
                             allowedPackages = allowedPackages.sorted().joinToString(","),
-                            isEnabled = plan?.isEnabled ?: true
+                            isEnabled = plan?.isEnabled ?: true,
+                            dateEpochDay = if (repeatsWeekly) null else planDate.toEpochDay()
                         )
-                        if (planConflicts(candidate, existingPlans)) error = "같은 요일과 시간에 겹치는 다른 일정이 있습니다."
+                        if (planConflicts(candidate, existingPlans)) error = "같은 날짜와 시간에 겹치는 다른 일정이 있습니다."
                         else onSave(candidate)
                     }
                 }
@@ -1375,14 +1271,14 @@ private fun SettingsScreen(state: MainUiState, viewModel: FocusCoinViewModel, pe
     if (resetConfirm) AlertDialog(
         onDismissRequest = { resetConfirm = false },
         title = { Text("모든 데이터를 초기화할까요?") },
-        text = { Text("코인 잔액, 세션, 거래 내역, 앱 잠금 설정, 학기별 성적과 대학 목표가 이 기기에서 삭제됩니다.") },
+        text = { Text("코인 잔액, 세션, 거래 내역, 앱 잠금 설정, 플래너 데이터가 이 기기에서 삭제됩니다.") },
         confirmButton = { TextButton(onClick = { viewModel.resetAll(); resetConfirm = false }) { Text("초기화", color = MaterialTheme.colorScheme.error) } },
         dismissButton = { TextButton(onClick = { resetConfirm = false }) { Text("취소") } }
     )
     if (showPrivacy) AlertDialog(
         onDismissRequest = { showPrivacy = false },
         title = { Text("개인정보 안내") },
-        text = { Text("FocusCoin은 서버 계정이나 광고를 사용하지 않습니다. 앱 잠금 설정, 요일별 플래너, 과목·시험 날짜와 목표, 학기별 5등급 성적, 대학별 참고 기준과 목표 대학, 학습 메모, 코인 및 휴식 시간 잔액, 공부 세션과 거래 기록은 기기 내부에 저장됩니다. 대학 기준은 사용자가 입력한 내용이며 합격 가능성으로 해석하지 않습니다. 접근성 서비스는 잠금 설정과 플래너 일정 적용을 위해 실행 앱의 패키지명만 확인합니다. 계획된 휴식 중에는 앱 제한이 끝날 시각을 확인합니다. 화면 글자, 키 입력, 비밀번호, 메시지, 연락처와 화면 캡처는 수집하거나 저장하지 않습니다. 사용 기록 권한을 허용하면 사용자가 선택한 앱의 화면 사용 시간을 기기에서 조회합니다. 이 정보는 리포트 표시와 공부 모드 중 선택 앱의 보너스 코인 정산에만 쓰고 기기 외부로 보내지 않습니다.") },
+        text = { Text("FocusCoin은 서버 계정이나 광고를 사용하지 않습니다. 앱 잠금 설정, 요일별 플래너, 과목·시험 날짜와 목표, 학습 메모, 코인 및 휴식 시간 잔액, 공부 세션과 거래 기록은 기기 내부에 저장됩니다. 접근성 서비스는 잠금 설정과 플래너 일정 적용을 위해 실행 앱의 패키지명만 확인합니다. 계획된 휴식 중에는 앱 제한이 끝날 시각을 확인합니다. 화면 글자, 키 입력, 비밀번호, 메시지, 연락처와 화면 캡처는 수집하거나 저장하지 않습니다. 사용 기록 권한을 허용하면 사용자가 선택한 앱의 화면 사용 시간을 기기에서 조회합니다. 이 정보는 리포트 표시와 공부 모드 중 선택 앱의 보너스 코인 정산에만 쓰고 기기 외부로 보내지 않습니다.") },
         confirmButton = { TextButton(onClick = { showPrivacy = false }) { Text("확인") } }
     )
 }
@@ -1552,4 +1448,3 @@ private fun appVersion(context: Context): String = runCatching {
         context.packageManager.getPackageInfo(context.packageName, 0).versionName
     }
 }.getOrNull() ?: "1.0.0"
-

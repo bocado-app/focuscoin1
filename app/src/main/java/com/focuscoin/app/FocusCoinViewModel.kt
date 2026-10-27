@@ -36,8 +36,6 @@ data class MainUiState(
     val studyBonusApps: List<StudyBonusAppEntity> = emptyList(),
     val studyPlans: List<StudyPlanEntity> = emptyList(),
     val subjectPlans: List<SubjectPlanEntity> = emptyList(),
-    val academicGrades: List<AcademicGradeEntity> = emptyList(),
-    val universityBenchmarks: List<UniversityBenchmarkEntity> = emptyList(),
     val dailyLearningMemos: List<DailyLearningMemoEntity> = emptyList(),
     val sessions: List<StudySessionEntity> = emptyList(),
     val transactions: List<CoinTransactionEntity> = emptyList(),
@@ -46,12 +44,7 @@ data class MainUiState(
     val isReady: Boolean = false
 )
 
-private data class CombinedScreenData(
-    val plans: Triple<Pair<List<AppLockEntity>, List<StudyBonusAppEntity>>, List<StudyPlanEntity>, List<SubjectPlanEntity>>,
-    val memos: List<DailyLearningMemoEntity>,
-    val grades: List<AcademicGradeEntity>,
-    val universities: List<UniversityBenchmarkEntity>
-)
+private data class CombinedScreenData(val plans: Triple<Pair<List<AppLockEntity>, List<StudyBonusAppEntity>>, List<StudyPlanEntity>, List<SubjectPlanEntity>>, val memos: List<DailyLearningMemoEntity>)
 
 class FocusCoinViewModel(
     application: Application,
@@ -68,9 +61,8 @@ class FocusCoinViewModel(
     private val plans = combine(appConfigurations, repository.studyPlans, repository.subjectPlans) { apps, plans, subjects ->
         Triple(apps, plans, subjects)
     }
-    private val academicData = combine(repository.academicGrades, repository.universityBenchmarks) { grades, universities -> grades to universities }
-    private val screenData = combine(plans, repository.dailyLearningMemos, academicData) { planData, memos, academic ->
-        CombinedScreenData(planData, memos, academic.first, academic.second)
+    private val screenData = combine(plans, repository.dailyLearningMemos) { planData, memos ->
+        CombinedScreenData(planData, memos)
     }
 
     private val baseState = combine(
@@ -86,8 +78,6 @@ class FocusCoinViewModel(
             studyBonusApps = appConfigs.plans.first.second,
             studyPlans = appConfigs.plans.second,
             subjectPlans = appConfigs.plans.third,
-            academicGrades = appConfigs.grades,
-            universityBenchmarks = appConfigs.universities,
             dailyLearningMemos = appConfigs.memos,
             sessions = sessions,
             transactions = transactions,
@@ -224,10 +214,6 @@ class FocusCoinViewModel(
     fun deleteStudyPlan(id: String) = viewModelScope.launch { repository.deleteStudyPlan(id) }
     fun saveSubjectPlan(plan: SubjectPlanEntity) = viewModelScope.launch { repository.saveSubjectPlan(plan) }
     fun deleteSubjectPlan(id: String) = viewModelScope.launch { repository.deleteSubjectPlan(id) }
-    fun saveAcademicGrade(grade: AcademicGradeEntity) = viewModelScope.launch { repository.saveAcademicGrade(grade) }
-    fun deleteAcademicGrade(id: String) = viewModelScope.launch { repository.deleteAcademicGrade(id) }
-    fun saveUniversityBenchmark(benchmark: UniversityBenchmarkEntity) = viewModelScope.launch { repository.saveUniversityBenchmark(benchmark) }
-    fun deleteUniversityBenchmark(id: String) = viewModelScope.launch { repository.deleteUniversityBenchmark(id) }
     fun saveDailyLearningMemo(date: String, content: String) = viewModelScope.launch { repository.saveDailyLearningMemo(date, content) }
     fun startPlannedBreak(minutes: Int, onResult: (Boolean) -> Unit = {}) = viewModelScope.launch {
         onResult(repository.startPlannedBreak(minutes))
@@ -253,4 +239,3 @@ class FocusCoinViewModelFactory(
         error("Unknown ViewModel class: ${modelClass.name}")
     }
 }
-

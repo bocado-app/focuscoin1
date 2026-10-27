@@ -42,7 +42,8 @@ data class StudyPlanEntity(
     val startMinute: Int,
     val endMinute: Int,
     val allowedPackages: String,
-    val isEnabled: Boolean = true
+    val isEnabled: Boolean = true,
+    val dateEpochDay: Long? = null
 ) {
     fun allowedPackageSet(): Set<String> = allowedPackages.split(',').filter { it.isNotBlank() }.toSet()
 
@@ -51,7 +52,10 @@ data class StudyPlanEntity(
         val calendar = Calendar.getInstance().apply { timeInMillis = timeMillis }
         val dayBit = 1 shl (calendar.get(Calendar.DAY_OF_WEEK) - 1)
         val minuteOfDay = calendar.get(Calendar.HOUR_OF_DAY) * 60 + calendar.get(Calendar.MINUTE)
-        return weekdaysMask and dayBit != 0 && minuteOfDay in startMinute until endMinute
+        val dateMatches = dateEpochDay?.let { epochDay ->
+            java.time.LocalDate.ofEpochDay(epochDay) == java.time.Instant.ofEpochMilli(timeMillis).atZone(java.time.ZoneId.systemDefault()).toLocalDate()
+        } ?: (weekdaysMask and dayBit != 0)
+        return dateMatches && minuteOfDay in startMinute until endMinute
     }
 }
 
@@ -61,27 +65,6 @@ data class SubjectPlanEntity(
     val subjectName: String,
     val examDateEpochDay: Long,
     val dailyGoalMinutes: Int
-)
-
-@Entity(tableName = "academic_grades")
-data class AcademicGradeEntity(
-    @PrimaryKey val id: String,
-    val academicYear: Int,
-    val semester: Int,
-    val subjectName: String,
-    val grade: Int,
-    val credits: Int = 1
-)
-
-@Entity(tableName = "university_benchmarks")
-data class UniversityBenchmarkEntity(
-    @PrimaryKey val id: String,
-    val universityName: String,
-    val departmentName: String,
-    val admissionType: String,
-    val referenceGrade: Double,
-    val sourceNote: String = "",
-    val isGoal: Boolean = false
 )
 
 @Entity(tableName = "daily_learning_memos")
@@ -174,33 +157,6 @@ interface SubjectPlanDao {
 }
 
 @Dao
-interface AcademicGradeDao {
-    @Query("SELECT * FROM academic_grades ORDER BY academicYear DESC, semester DESC, subjectName COLLATE NOCASE")
-    fun observeAll(): Flow<List<AcademicGradeEntity>>
-
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun upsert(entity: AcademicGradeEntity)
-
-    @Query("DELETE FROM academic_grades WHERE id = :id")
-    suspend fun delete(id: String)
-}
-
-@Dao
-interface UniversityBenchmarkDao {
-    @Query("SELECT * FROM university_benchmarks ORDER BY isGoal DESC, universityName COLLATE NOCASE, departmentName COLLATE NOCASE")
-    fun observeAll(): Flow<List<UniversityBenchmarkEntity>>
-
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun upsert(entity: UniversityBenchmarkEntity)
-
-    @Query("UPDATE university_benchmarks SET isGoal = 0")
-    suspend fun clearGoalSelection()
-
-    @Query("DELETE FROM university_benchmarks WHERE id = :id")
-    suspend fun delete(id: String)
-}
-
-@Dao
 interface DailyLearningMemoDao {
     @Query("SELECT * FROM daily_learning_memos ORDER BY date DESC")
     fun observeAll(): Flow<List<DailyLearningMemoEntity>>
@@ -243,8 +199,8 @@ interface CoinTransactionDao {
 }
 
 @Database(
-    entities = [AppLockEntity::class, StudyBonusAppEntity::class, StudyPlanEntity::class, SubjectPlanEntity::class, AcademicGradeEntity::class, UniversityBenchmarkEntity::class, DailyLearningMemoEntity::class, StudySessionEntity::class, CoinTransactionEntity::class],
-    version = 6,
+    entities = [AppLockEntity::class, StudyBonusAppEntity::class, StudyPlanEntity::class, SubjectPlanEntity::class, DailyLearningMemoEntity::class, StudySessionEntity::class, CoinTransactionEntity::class],
+    version = 7,
     exportSchema = false
 )
 abstract class FocusCoinDatabase : RoomDatabase() {
@@ -252,8 +208,6 @@ abstract class FocusCoinDatabase : RoomDatabase() {
     abstract fun studyBonusAppDao(): StudyBonusAppDao
     abstract fun studyPlanDao(): StudyPlanDao
     abstract fun subjectPlanDao(): SubjectPlanDao
-    abstract fun academicGradeDao(): AcademicGradeDao
-    abstract fun universityBenchmarkDao(): UniversityBenchmarkDao
     abstract fun dailyLearningMemoDao(): DailyLearningMemoDao
     abstract fun studySessionDao(): StudySessionDao
     abstract fun coinTransactionDao(): CoinTransactionDao
@@ -317,29 +271,16 @@ abstract class FocusCoinDatabase : RoomDatabase() {
         }
         val MIGRATION_5_6 = object : Migration(5, 6) {
             override fun migrate(database: SupportSQLiteDatabase) {
-                database.execSQL(
-                    """CREATE TABLE IF NOT EXISTS academic_grades (
-                        id TEXT NOT NULL PRIMARY KEY,
-                        academicYear INTEGER NOT NULL,
-                        semester INTEGER NOT NULL,
-                        subjectName TEXT NOT NULL,
-                        grade INTEGER NOT NULL,
-                        credits INTEGER NOT NULL
-                    )""".trimIndent()
-                )
-                database.execSQL(
-                    """CREATE TABLE IF NOT EXISTS university_benchmarks (
-                        id TEXT NOT NULL PRIMARY KEY,
-                        universityName TEXT NOT NULL,
-                        departmentName TEXT NOT NULL,
-                        admissionType TEXT NOT NULL,
-                        referenceGrade REAL NOT NULL,
-                        sourceNote TEXT NOT NULL,
-                        isGoal INTEGER NOT NULL
-                    )""".trimIndent()
-                )
+                database.execSQL("""CREATE TABLE IF NOT EXISTS academic_grades (id TEXT NOT NULL PRIMARY KEY, academicYear INTEGER NOT NULL, semester INTEGER NOT NULL, subjectName TEXT NOT NULL, grade INTEGER NOT NULL, credits INTEGER NOT NULL)""")
+                database.execSQL("""CREATE TABLE IF NOT EXISTS university_benchmarks (id TEXT NOT NULL PRIMARY KEY, universityName TEXT NOT NULL, departmentName TEXT NOT NULL, admissionType TEXT NOT NULL, referenceGrade REAL NOT NULL, sourceNote TEXT NOT NULL, isGoal INTEGER NOT NULL)""")
+            }
+        }
+        val MIGRATION_6_7 = object : Migration(6, 7) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL("ALTER TABLE study_plans ADD COLUMN dateEpochDay INTEGER")
+                database.execSQL("DROP TABLE IF EXISTS academic_grades")
+                database.execSQL("DROP TABLE IF EXISTS university_benchmarks")
             }
         }
     }
 }
-

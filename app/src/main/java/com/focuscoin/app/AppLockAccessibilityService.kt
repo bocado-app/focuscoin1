@@ -365,4 +365,3 @@ class AppLockAccessibilityService : AccessibilityService() {
         super.onDestroy()
     }
 }
-
