@@ -920,7 +920,12 @@ private fun CalendarScheduleScreen(state: MainUiState, viewModel: FocusCoinViewM
                                     Row(verticalAlignment = Alignment.CenterVertically) {
                                         Column(Modifier.weight(1f)) {
                                             Text(if (plan.startMinute / 60 == hour) plan.title else "${plan.title} · 계속", fontWeight = FontWeight.SemiBold, maxLines = 1)
-                                            Text("${formatPlanTime(plan.startMinute)}–${formatPlanTime(plan.endMinute)} · 허용 앱 ${plan.allowedPackageSet().size}개", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                            Text(
+                                                "${formatPlanTime(plan.startMinute)}–${formatPlanTime(plan.endMinute)} · 허용 앱 ${plan.allowedPackageSet().size}개" +
+                                                    if (plan.reminderEnabled) " · 알림 ${if (plan.reminderMinutesBefore == 0) "정각" else "${plan.reminderMinutesBefore}분 전"}" else "",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
                                         }
                                         Switch(checked = plan.isEnabled, onCheckedChange = { enabled ->
                                             val changed = plan.copy(isEnabled = enabled)
@@ -969,6 +974,7 @@ private fun StudyPlanEditorDialog(
     onDismiss: () -> Unit,
     onSave: (StudyPlanEntity) -> Unit
 ) {
+    val context = androidx.compose.ui.platform.LocalContext.current
     var title by remember(plan?.id, selectedDate.toEpochDay()) { mutableStateOf(plan?.title ?: "공부 시간") }
     var planDate by remember(plan?.id, selectedDate.toEpochDay()) {
         mutableStateOf(plan?.dateEpochDay?.let { LocalDate.ofEpochDay(it) } ?: selectedDate)
@@ -982,6 +988,8 @@ private fun StudyPlanEditorDialog(
         mutableStateOf(formatPlanTime(plan?.endMinute ?: (initialStartMinute + 60).coerceAtMost(1440)))
     }
     var allowedPackages by remember(plan?.id, selectedDate.toEpochDay()) { mutableStateOf(plan?.allowedPackageSet() ?: emptySet()) }
+    var reminderEnabled by remember(plan?.id, selectedDate.toEpochDay()) { mutableStateOf(plan?.reminderEnabled ?: false) }
+    var reminderMinutesBefore by remember(plan?.id, selectedDate.toEpochDay()) { mutableIntStateOf(plan?.reminderMinutesBefore ?: 5) }
     var error by remember(plan?.id) { mutableStateOf("") }
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -1013,6 +1021,32 @@ private fun StudyPlanEditorDialog(
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedTextField(startText, { startText = it.take(5) }, modifier = Modifier.weight(1f), label = { Text("시작 (시:분)") }, placeholder = { Text("19:00") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text), singleLine = true)
                     OutlinedTextField(endText, { endText = it.take(5) }, modifier = Modifier.weight(1f), label = { Text("종료 (시:분)") }, placeholder = { Text("20:00") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text), singleLine = true)
+                }
+                Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+                    Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text("공부 시작 알림", fontWeight = FontWeight.SemiBold)
+                                Text("일정 시간에 조용한 알림을 보내요.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                            Switch(checked = reminderEnabled, onCheckedChange = { reminderEnabled = it })
+                        }
+                        if (reminderEnabled) {
+                            Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                listOf(0, 5, 10, 15).forEach { minutes ->
+                                    FilterChip(
+                                        selected = reminderMinutesBefore == minutes,
+                                        onClick = { reminderMinutesBefore = minutes },
+                                        label = { Text(if (minutes == 0) "정각" else "${minutes}분 전") }
+                                    )
+                                }
+                            }
+                            if (!PermissionStatus.notificationsGranted(context)) {
+                                Text("알림 권한이 꺼져 있어 알림을 표시할 수 없습니다.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                                TextButton(onClick = { PermissionStatus.openNotificationSettings(context) }) { Text("알림 설정 열기") }
+                            }
+                        }
+                    }
                 }
                 Text("일정 중 허용할 앱", fontWeight = FontWeight.SemiBold)
                 Text("선택하지 않은 일반 앱은 일정 시간 동안 잠깁니다. FocusCoin과 시스템 앱은 사용할 수 있습니다.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -1052,7 +1086,9 @@ private fun StudyPlanEditorDialog(
                             endMinute = end,
                             allowedPackages = allowedPackages.sorted().joinToString(","),
                             isEnabled = plan?.isEnabled ?: true,
-                            dateEpochDay = if (repeatsWeekly) null else planDate.toEpochDay()
+                            dateEpochDay = if (repeatsWeekly) null else planDate.toEpochDay(),
+                            reminderEnabled = reminderEnabled,
+                            reminderMinutesBefore = reminderMinutesBefore
                         )
                         if (planConflicts(candidate, existingPlans)) error = "같은 날짜와 시간에 겹치는 다른 일정이 있습니다."
                         else onSave(candidate)

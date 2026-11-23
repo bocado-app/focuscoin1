@@ -92,6 +92,9 @@ class FocusCoinViewModel(
 
     init {
         viewModelScope.launch(Dispatchers.IO) { loadInstalledApps() }
+        viewModelScope.launch(Dispatchers.IO) {
+            repository.studyPlans.first().forEach { StudyPlanReminderScheduler.schedule(getApplication(), it) }
+        }
         viewModelScope.launch { repository.reconcileBalance() }
         viewModelScope.launch(Dispatchers.IO) {
             baselineStudyUsage()
@@ -210,8 +213,14 @@ class FocusCoinViewModel(
         repository.setStudyBonusApp(app.packageName, app.appName, selected, usage)
     }
 
-    fun saveStudyPlan(plan: StudyPlanEntity) = viewModelScope.launch { repository.saveStudyPlan(plan) }
-    fun deleteStudyPlan(id: String) = viewModelScope.launch { repository.deleteStudyPlan(id) }
+    fun saveStudyPlan(plan: StudyPlanEntity) = viewModelScope.launch {
+        repository.saveStudyPlan(plan)
+        StudyPlanReminderScheduler.schedule(getApplication(), plan)
+    }
+    fun deleteStudyPlan(id: String) = viewModelScope.launch {
+        repository.deleteStudyPlan(id)
+        StudyPlanReminderScheduler.cancel(getApplication(), id)
+    }
     fun saveSubjectPlan(plan: SubjectPlanEntity) = viewModelScope.launch { repository.saveSubjectPlan(plan) }
     fun deleteSubjectPlan(id: String) = viewModelScope.launch { repository.deleteSubjectPlan(id) }
     fun saveDailyLearningMemo(date: String, content: String) = viewModelScope.launch { repository.saveDailyLearningMemo(date, content) }

@@ -43,7 +43,9 @@ data class StudyPlanEntity(
     val endMinute: Int,
     val allowedPackages: String,
     val isEnabled: Boolean = true,
-    val dateEpochDay: Long? = null
+    val dateEpochDay: Long? = null,
+    val reminderEnabled: Boolean = false,
+    val reminderMinutesBefore: Int = 5
 ) {
     fun allowedPackageSet(): Set<String> = allowedPackages.split(',').filter { it.isNotBlank() }.toSet()
 
@@ -137,6 +139,9 @@ interface StudyPlanDao {
     @Query("SELECT * FROM study_plans ORDER BY startMinute, title COLLATE NOCASE")
     fun observeAll(): Flow<List<StudyPlanEntity>>
 
+    @Query("SELECT * FROM study_plans WHERE id = :id LIMIT 1")
+    suspend fun get(id: String): StudyPlanEntity?
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(entity: StudyPlanEntity)
 
@@ -200,7 +205,7 @@ interface CoinTransactionDao {
 
 @Database(
     entities = [AppLockEntity::class, StudyBonusAppEntity::class, StudyPlanEntity::class, SubjectPlanEntity::class, DailyLearningMemoEntity::class, StudySessionEntity::class, CoinTransactionEntity::class],
-    version = 7,
+    version = 8,
     exportSchema = false
 )
 abstract class FocusCoinDatabase : RoomDatabase() {
@@ -280,6 +285,12 @@ abstract class FocusCoinDatabase : RoomDatabase() {
                 database.execSQL("ALTER TABLE study_plans ADD COLUMN dateEpochDay INTEGER")
                 database.execSQL("DROP TABLE IF EXISTS academic_grades")
                 database.execSQL("DROP TABLE IF EXISTS university_benchmarks")
+            }
+        }
+        val MIGRATION_7_8 = object : Migration(7, 8) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL("ALTER TABLE study_plans ADD COLUMN reminderEnabled INTEGER NOT NULL DEFAULT 0")
+                database.execSQL("ALTER TABLE study_plans ADD COLUMN reminderMinutesBefore INTEGER NOT NULL DEFAULT 5")
             }
         }
     }

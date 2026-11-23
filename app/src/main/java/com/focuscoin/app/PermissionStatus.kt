@@ -35,6 +35,10 @@ object PermissionStatus {
 
     fun openUsageSettings(context: Context) = open(context, Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS))
     fun openAccessibilitySettings(context: Context) = open(context, Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+    fun openNotificationSettings(context: Context) = open(
+        context,
+        Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+    )
 
     private fun open(context: Context, intent: Intent) {
         runCatching { context.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
