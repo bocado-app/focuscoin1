@@ -81,6 +81,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
@@ -279,6 +280,13 @@ private fun HomeScreen(
 ) {
     val today = startOfDay(System.currentTimeMillis())
     val todayKey = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date(today))
+    val attendedToday = state.attendancePurchases.any { it.date == todayKey }
+    val attendanceCount = state.attendancePurchases.size
+    val attendanceTier = AttendanceTier.forAttendanceCount(attendanceCount)
+    val nextAttendanceTier = attendanceTier.nextTier()
+    var showAttendanceConfirm by remember(todayKey) { mutableStateOf(false) }
+    var attendancePurchaseInProgress by remember(todayKey) { mutableStateOf(false) }
+    var attendanceMessage by remember(todayKey) { mutableStateOf("") }
     val savedMemo = state.dailyLearningMemos.firstOrNull { it.date == todayKey }
     var memoDraft by remember(todayKey) { mutableStateOf(savedMemo?.content.orEmpty()) }
     var memoSaved by remember(todayKey) { mutableStateOf(false) }
@@ -310,6 +318,67 @@ private fun HomeScreen(
                 MetricCard("오늘 공부", "${studyMinutes / 60}시간 ${studyMinutes % 60}분", Modifier.weight(1f))
                 MetricCard("오늘 획득", "+$earned", Modifier.weight(1f), CoinGold)
                 MetricCard("오늘 사용", "−$spent", Modifier.weight(1f))
+            }
+        }
+        item {
+            Card(
+                shape = RoundedCornerShape(22.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer)
+            ) {
+                Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Image(
+                            painter = painterResource(attendanceTier.badgeIcon),
+                            contentDescription = "${attendanceTier.displayName} 티어 배지",
+                            modifier = Modifier.size(56.dp)
+                        )
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text("내 출석 티어", Modifier.weight(1f), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onTertiaryContainer)
+                                Text(attendanceTier.displayName, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                            }
+                            Text("출석 구매 ${attendanceCount}회", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onTertiaryContainer)
+                            if (nextAttendanceTier == null) {
+                                Text("최고 티어를 달성했어요!", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.primary)
+                            } else {
+                                val tierProgress = ((attendanceCount - attendanceTier.minimumAttendanceCount).toFloat() /
+                                    (nextAttendanceTier.minimumAttendanceCount - attendanceTier.minimumAttendanceCount)).coerceIn(0f, 1f)
+                                LinearProgressIndicator(progress = { tierProgress }, modifier = Modifier.fillMaxWidth())
+                                Text("다음 티어 ${nextAttendanceTier.displayName}까지 ${nextAttendanceTier.minimumAttendanceCount - attendanceCount}회", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onTertiaryContainer)
+                            }
+                        }
+                    }
+                    Divider(color = MaterialTheme.colorScheme.onTertiaryContainer.copy(alpha = .16f))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("오늘의 출석", Modifier.weight(1f), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                        Text(if (attendedToday) "출석 완료" else "150 코인", color = MaterialTheme.colorScheme.tertiary, fontWeight = FontWeight.Bold)
+                    }
+                    if (attendedToday) {
+                        Text("오늘 출석을 구매했어요. 150코인을 사용했습니다.", color = MaterialTheme.colorScheme.onTertiaryContainer)
+                    } else {
+                        Text("보유 코인 150개를 사용해 오늘 출석을 구매하세요.", color = MaterialTheme.colorScheme.onTertiaryContainer)
+                        Text("오늘 모은 코인 수 조건이 아니라, 보유 잔액에서 150개가 차감됩니다.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onTertiaryContainer.copy(alpha = .8f))
+                        LinearProgressIndicator(
+                            progress = { (state.preferences.balance.toFloat() / 150f).coerceIn(0f, 1f) },
+                            modifier = Modifier.fillMaxWidth(),
+                            color = MaterialTheme.colorScheme.tertiary
+                        )
+                        Text("출석 구매 코인 · ${state.preferences.balance.coerceAtMost(150)} / 150", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onTertiaryContainer)
+                        if (state.preferences.balance >= 150) {
+                            Button(
+                                onClick = { showAttendanceConfirm = true },
+                                modifier = Modifier.fillMaxWidth(),
+                                enabled = !attendancePurchaseInProgress,
+                                shape = RoundedCornerShape(14.dp)
+                            ) { Text(if (attendancePurchaseInProgress) "처리 중…" else "150 코인으로 출석 구매") }
+                        } else {
+                            Text("${150 - state.preferences.balance}코인이 더 필요해요. 공부해 모은 코인으로 구매할 수 있어요.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onTertiaryContainer)
+                        }
+                    }
+                    if (attendanceMessage.isNotBlank()) {
+                        Text(attendanceMessage, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.primary)
+                    }
+                }
             }
         }
         item {
@@ -360,6 +429,30 @@ private fun HomeScreen(
         }
         item { Text("선택한 잠금 앱 ${state.appLocks.count { it.isLocked }}개", color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(bottom = 8.dp)) }
     }
+    if (showAttendanceConfirm) AlertDialog(
+        onDismissRequest = { if (!attendancePurchaseInProgress) showAttendanceConfirm = false },
+        title = { Text("출석을 구매할까요?") },
+        text = { Text("오늘 출석 체크에 150코인을 사용합니다. 구매하면 보유 잔액에서 바로 차감되고, 오늘은 다시 구매할 수 없습니다.") },
+        confirmButton = {
+            TextButton(
+                enabled = !attendancePurchaseInProgress,
+                onClick = {
+                    attendancePurchaseInProgress = true
+                    viewModel.purchaseDailyAttendance { result ->
+                        attendancePurchaseInProgress = false
+                        attendanceMessage = when (result) {
+                            DailyAttendancePurchaseResult.Purchased -> "출석 완료! 150코인을 사용했어요."
+                            DailyAttendancePurchaseResult.AlreadyPurchased -> "오늘 출석은 이미 완료됐어요."
+                            is DailyAttendancePurchaseResult.InsufficientCoins -> "코인이 ${result.missing}개 부족해요."
+                            DailyAttendancePurchaseResult.Failed -> "출석 구매에 실패했어요. 잠시 후 다시 시도해 주세요."
+                        }
+                        showAttendanceConfirm = false
+                    }
+                }
+            ) { Text("150 코인 사용") }
+        },
+        dismissButton = { TextButton(enabled = !attendancePurchaseInProgress, onClick = { showAttendanceConfirm = false }) { Text("취소") } }
+    )
 }
 
 @Composable
@@ -1325,7 +1418,7 @@ private fun SettingsScreen(state: MainUiState, viewModel: FocusCoinViewModel, pe
     if (showPrivacy) AlertDialog(
         onDismissRequest = { showPrivacy = false },
         title = { Text("개인정보 안내") },
-        text = { Text("FocusCoin은 서버 계정이나 광고를 사용하지 않습니다. 앱 잠금 설정, 요일별 플래너, 과목·시험 날짜와 목표, 학습 메모, 코인 및 휴식 시간 잔액, 공부 세션과 거래 기록은 기기 내부에 저장됩니다. 접근성 서비스는 잠금 설정과 플래너 일정 적용을 위해 실행 앱의 패키지명만 확인합니다. 계획된 휴식 중에는 앱 제한이 끝날 시각을 확인합니다. 화면 글자, 키 입력, 비밀번호, 메시지, 연락처와 화면 캡처는 수집하거나 저장하지 않습니다. 사용 기록 권한을 허용하면 사용자가 선택한 앱의 화면 사용 시간을 기기에서 조회합니다. 이 정보는 리포트 표시와 공부 모드 중 선택 앱의 보너스 코인 정산에만 쓰고 기기 외부로 보내지 않습니다.") },
+        text = { Text("FocusCoin은 서버 계정이나 광고를 사용하지 않습니다. 앱 잠금 설정, 요일별 플래너, 과목·시험 날짜와 목표, 학습 메모, 코인 및 휴식 시간 잔액, 공부 세션, 거래 기록과 일일 출석 구매 날짜는 기기 내부에 저장됩니다. 접근성 서비스는 잠금 설정과 플래너 일정 적용을 위해 실행 앱의 패키지명만 확인합니다. 계획된 휴식 중에는 앱 제한이 끝날 시각을 확인합니다. 화면 글자, 키 입력, 비밀번호, 메시지, 연락처와 화면 캡처는 수집하거나 저장하지 않습니다. 사용 기록 권한을 허용하면 사용자가 선택한 앱의 화면 사용 시간을 기기에서 조회합니다. 이 정보는 리포트 표시와 공부 모드 중 선택 앱의 보너스 코인 정산에만 쓰고 기기 외부로 보내지 않습니다.") },
         confirmButton = { TextButton(onClick = { showPrivacy = false }) { Text("확인") } }
     )
 }

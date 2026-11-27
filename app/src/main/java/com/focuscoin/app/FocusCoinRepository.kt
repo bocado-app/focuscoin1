@@ -58,6 +58,13 @@ sealed interface UnlockResult {
     data object AppNotSelected : UnlockResult
 }
 
+sealed interface DailyAttendancePurchaseResult {
+    data object Purchased : DailyAttendancePurchaseResult
+    data object AlreadyPurchased : DailyAttendancePurchaseResult
+    data class InsufficientCoins(val missing: Int) : DailyAttendancePurchaseResult
+    data object Failed : DailyAttendancePurchaseResult
+}
+
 class FocusCoinRepository(
     private val database: FocusCoinDatabase,
     private val store: DataStore<Preferences>
@@ -69,6 +76,7 @@ class FocusCoinRepository(
     private val dailyLearningMemoDao = database.dailyLearningMemoDao()
     private val sessionDao = database.studySessionDao()
     private val transactionDao = database.coinTransactionDao()
+    private val attendanceDao = database.dailyAttendancePurchaseDao()
     private val mutex = Mutex()
 
     private object Keys {
@@ -126,6 +134,31 @@ class FocusCoinRepository(
     val dailyLearningMemos: Flow<List<DailyLearningMemoEntity>> = dailyLearningMemoDao.observeAll()
     val sessions: Flow<List<StudySessionEntity>> = sessionDao.observeAll()
     val transactions: Flow<List<CoinTransactionEntity>> = transactionDao.observeAll()
+    val attendancePurchases: Flow<List<DailyAttendancePurchaseEntity>> = attendanceDao.observeAll()
+
+    suspend fun purchaseDailyAttendance(now: Long = System.currentTimeMillis()): DailyAttendancePurchaseResult = mutex.withLock {
+        val date = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date(now))
+        if (attendanceDao.get(date) != null) return@withLock DailyAttendancePurchaseResult.AlreadyPurchased
+        val price = 150
+        val preferences = preferenceFlow.firstValue()
+        if (preferences.balance < price) {
+            return@withLock DailyAttendancePurchaseResult.InsufficientCoins(price - preferences.balance)
+        }
+        val purchased = database.withTransaction {
+            if (attendanceDao.insertIgnore(DailyAttendancePurchaseEntity(date, now, price)) == -1L) {
+                false
+            } else {
+                val transactionInserted = transactionDao.insertIgnore(
+                    CoinTransactionEntity("attendance:$date", now, "SPEND", price, memo = "일일 출석 구매")
+                ) != -1L
+                if (!transactionInserted) attendanceDao.delete(date)
+                transactionInserted
+            }
+        }
+        if (!purchased) return@withLock DailyAttendancePurchaseResult.AlreadyPurchased
+        store.edit { it[Keys.balance] = (preferences.balance - price).coerceAtLeast(0) }
+        DailyAttendancePurchaseResult.Purchased
+    }
 
     suspend fun reconcileBalance() = mutex.withLock {
         val ledgerBalance = transactionDao.netCoinBalance().coerceAtLeast(0)

@@ -12,6 +12,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -39,12 +40,13 @@ data class MainUiState(
     val dailyLearningMemos: List<DailyLearningMemoEntity> = emptyList(),
     val sessions: List<StudySessionEntity> = emptyList(),
     val transactions: List<CoinTransactionEntity> = emptyList(),
+    val attendancePurchases: List<DailyAttendancePurchaseEntity> = emptyList(),
     val installedApps: List<InstalledApp> = emptyList(),
     val appListError: Boolean = false,
     val isReady: Boolean = false
 )
 
-private data class CombinedScreenData(val plans: Triple<Pair<List<AppLockEntity>, List<StudyBonusAppEntity>>, List<StudyPlanEntity>, List<SubjectPlanEntity>>, val memos: List<DailyLearningMemoEntity>)
+private data class CombinedScreenData(val plans: Triple<Pair<List<AppLockEntity>, List<StudyBonusAppEntity>>, List<StudyPlanEntity>, List<SubjectPlanEntity>>, val memos: List<DailyLearningMemoEntity>, val attendancePurchases: List<DailyAttendancePurchaseEntity>)
 
 class FocusCoinViewModel(
     application: Application,
@@ -61,8 +63,8 @@ class FocusCoinViewModel(
     private val plans = combine(appConfigurations, repository.studyPlans, repository.subjectPlans) { apps, plans, subjects ->
         Triple(apps, plans, subjects)
     }
-    private val screenData = combine(plans, repository.dailyLearningMemos) { planData, memos ->
-        CombinedScreenData(planData, memos)
+    private val screenData = combine(plans, repository.dailyLearningMemos, repository.attendancePurchases) { planData, memos, attendancePurchases ->
+        CombinedScreenData(planData, memos, attendancePurchases)
     }
 
     private val baseState = combine(
@@ -81,6 +83,7 @@ class FocusCoinViewModel(
             dailyLearningMemos = appConfigs.memos,
             sessions = sessions,
             transactions = transactions,
+            attendancePurchases = appConfigs.attendancePurchases,
             installedApps = apps,
             isReady = true
         )
@@ -203,6 +206,16 @@ class FocusCoinViewModel(
     fun setEmergencyEnabled(value: Boolean) = viewModelScope.launch { repository.setEmergencyEnabled(value) }
     fun setEmergencyMinutes(value: Int) = viewModelScope.launch { repository.setEmergencyMinutes(value) }
     fun resetAll() = viewModelScope.launch { repository.resetAll() }
+    fun purchaseDailyAttendance(onResult: (DailyAttendancePurchaseResult) -> Unit) = viewModelScope.launch {
+        val result = try {
+            repository.purchaseDailyAttendance()
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            DailyAttendancePurchaseResult.Failed
+        }
+        onResult(result)
+    }
 
     fun setAppSelected(app: InstalledApp, selected: Boolean) = viewModelScope.launch {
         repository.upsertAppLock(app.packageName, app.appName, selected)

@@ -101,6 +101,13 @@ data class CoinTransactionEntity(
     val durationMinutes: Int = 0
 )
 
+@Entity(tableName = "daily_attendance_purchases")
+data class DailyAttendancePurchaseEntity(
+    @PrimaryKey val date: String,
+    val purchasedAt: Long,
+    val costCoins: Int
+)
+
 @Dao
 interface AppLockDao {
     @Query("SELECT * FROM app_lock_configs ORDER BY appName COLLATE NOCASE")
@@ -203,9 +210,24 @@ interface CoinTransactionDao {
     suspend fun clear()
 }
 
+@Dao
+interface DailyAttendancePurchaseDao {
+    @Query("SELECT * FROM daily_attendance_purchases ORDER BY date DESC")
+    fun observeAll(): Flow<List<DailyAttendancePurchaseEntity>>
+
+    @Query("SELECT * FROM daily_attendance_purchases WHERE date = :date LIMIT 1")
+    suspend fun get(date: String): DailyAttendancePurchaseEntity?
+
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertIgnore(entity: DailyAttendancePurchaseEntity): Long
+
+    @Query("DELETE FROM daily_attendance_purchases WHERE date = :date")
+    suspend fun delete(date: String)
+}
+
 @Database(
-    entities = [AppLockEntity::class, StudyBonusAppEntity::class, StudyPlanEntity::class, SubjectPlanEntity::class, DailyLearningMemoEntity::class, StudySessionEntity::class, CoinTransactionEntity::class],
-    version = 8,
+    entities = [AppLockEntity::class, StudyBonusAppEntity::class, StudyPlanEntity::class, SubjectPlanEntity::class, DailyLearningMemoEntity::class, StudySessionEntity::class, CoinTransactionEntity::class, DailyAttendancePurchaseEntity::class],
+    version = 9,
     exportSchema = false
 )
 abstract class FocusCoinDatabase : RoomDatabase() {
@@ -216,6 +238,7 @@ abstract class FocusCoinDatabase : RoomDatabase() {
     abstract fun dailyLearningMemoDao(): DailyLearningMemoDao
     abstract fun studySessionDao(): StudySessionDao
     abstract fun coinTransactionDao(): CoinTransactionDao
+    abstract fun dailyAttendancePurchaseDao(): DailyAttendancePurchaseDao
 
     companion object {
         val MIGRATION_1_2 = object : Migration(1, 2) {
@@ -291,6 +314,11 @@ abstract class FocusCoinDatabase : RoomDatabase() {
             override fun migrate(database: SupportSQLiteDatabase) {
                 database.execSQL("ALTER TABLE study_plans ADD COLUMN reminderEnabled INTEGER NOT NULL DEFAULT 0")
                 database.execSQL("ALTER TABLE study_plans ADD COLUMN reminderMinutesBefore INTEGER NOT NULL DEFAULT 5")
+            }
+        }
+        val MIGRATION_8_9 = object : Migration(8, 9) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL("CREATE TABLE IF NOT EXISTS daily_attendance_purchases (date TEXT NOT NULL PRIMARY KEY, purchasedAt INTEGER NOT NULL, costCoins INTEGER NOT NULL)")
             }
         }
     }
